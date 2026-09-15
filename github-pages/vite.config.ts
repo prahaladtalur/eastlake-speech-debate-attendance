@@ -8,6 +8,7 @@ const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 export default defineConfig({
   base: "/eastlake-speech-debate-attendance/",
+  publicDir: path.resolve(projectRoot, "public"),
   root: path.resolve(projectRoot, "github-pages"),
   plugins: [react()],
   resolve: {
