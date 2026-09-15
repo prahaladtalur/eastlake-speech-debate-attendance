@@ -65,6 +65,17 @@ type WebMcpContext = {
   ) => void | Promise<void>;
 };
 
+function attendanceApiUrl() {
+  const configuredBase =
+    typeof window !== "undefined"
+      ? (window as Window & { __EASTLAKE_API_BASE__?: string })
+          .__EASTLAKE_API_BASE__
+      : undefined;
+  return configuredBase
+    ? `${configuredBase.replace(/\/$/, "")}/api/attendance`
+    : "/api/attendance";
+}
+
 function localDateString() {
   const date = new Date();
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -113,7 +124,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/attendance", { cache: "no-store" });
+      const response = await fetch(attendanceApiUrl(), { cache: "no-store" });
       const payload = (await response.json()) as {
         members?: Member[];
         meetings?: Meeting[];
@@ -175,7 +186,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                 : "";
             if (!name) throw new Error("name is required");
 
-            const response = await fetch("/api/attendance", {
+            const response = await fetch(attendanceApiUrl(), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -251,7 +262,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               throw new Error("statuses must map member ids to booleans");
             }
 
-            const response = await fetch("/api/attendance", {
+            const response = await fetch(attendanceApiUrl(), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -361,7 +372,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     setError("");
     setNotice("");
     try {
-      const response = await fetch("/api/attendance", {
+      const response = await fetch(attendanceApiUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -399,7 +410,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     setError("");
     setNotice("");
     try {
-      const response = await fetch("/api/attendance", {
+      const response = await fetch(attendanceApiUrl(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

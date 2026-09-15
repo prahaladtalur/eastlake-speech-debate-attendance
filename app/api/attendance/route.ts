@@ -37,7 +37,37 @@ function cleanName(value: unknown) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
 }
 
-export async function GET() {
+const GITHUB_PAGES_ORIGIN = "https://prahaladtalur.github.io";
+
+function corsHeaders(request: Request) {
+  const origin = request.headers.get("origin");
+  const isAllowedOrigin =
+    !origin ||
+    origin === GITHUB_PAGES_ORIGIN ||
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+
+  return {
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Origin": isAllowedOrigin
+      ? origin || GITHUB_PAGES_ORIGIN
+      : GITHUB_PAGES_ORIGIN,
+    Vary: "Origin",
+  };
+}
+
+function jsonResponse(request: Request, body: unknown, init?: ResponseInit) {
+  return Response.json(body, {
+    ...init,
+    headers: { ...corsHeaders(request), ...init?.headers },
+  });
+}
+
+export function OPTIONS(request: Request) {
+  return new Response(null, { status: 204, headers: corsHeaders(request) });
+}
+
+export async function GET(request: Request) {
   try {
     const db = getDb();
     const [memberRows, meetingRows, attendanceRows] = await Promise.all([
@@ -50,13 +80,13 @@ export async function GET() {
       db.select().from(attendance).orderBy(desc(attendance.updatedAt)).limit(50000),
     ]);
 
-    return Response.json({
+    return jsonResponse(request, {
       members: memberRows,
       meetings: meetingRows,
       attendance: attendanceRows,
     });
   } catch (error) {
-    return Response.json({ error: routeErrorMessage(error) }, { status: 500 });
+    return jsonResponse(request, { error: routeErrorMessage(error) }, { status: 500 });
   }
 }
 
@@ -79,11 +109,11 @@ export async function POST(request: Request) {
         : today();
 
       if (!name) {
-        return Response.json({ error: "Enter a name first." }, { status: 400 });
+        return jsonResponse(request, { error: "Enter a name first." }, { status: 400 });
       }
 
       if (name.length > 80) {
-        return Response.json(
+        return jsonResponse(request,
           { error: "Keep names under 80 characters." },
           { status: 400 },
         );
@@ -95,7 +125,7 @@ export async function POST(request: Request) {
           (member) => member.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
         )
       ) {
-        return Response.json(
+        return jsonResponse(request,
           { error: "That person is already on the roster." },
           { status: 409 },
         );
@@ -106,12 +136,12 @@ export async function POST(request: Request) {
         .values({ name, eligibleFrom })
         .returning();
 
-      return Response.json({ member }, { status: 201 });
+      return jsonResponse(request, { member }, { status: 201 });
     }
 
     if (payload.action === "save_meeting") {
       if (!isDate(payload.meetingDate)) {
-        return Response.json(
+        return jsonResponse(request,
           { error: "Choose a valid meeting date." },
           { status: 400 },
         );
@@ -163,11 +193,11 @@ export async function POST(request: Request) {
           });
       }
 
-      return Response.json({ meetingId });
+      return jsonResponse(request, { meetingId });
     }
 
-    return Response.json({ error: "Unknown attendance action." }, { status: 400 });
+    return jsonResponse(request, { error: "Unknown attendance action." }, { status: 400 });
   } catch (error) {
-    return Response.json({ error: routeErrorMessage(error) }, { status: 500 });
+    return jsonResponse(request, { error: routeErrorMessage(error) }, { status: 500 });
   }
 }
