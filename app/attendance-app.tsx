@@ -1,11 +1,9 @@
 "use client";
 
-import {
-  Check,
-  CircleHelp,
-  Plus,
-  RefreshCw,
-} from "lucide-react";
+import Check from "lucide-react/dist/esm/icons/check.mjs";
+import CircleHelp from "lucide-react/dist/esm/icons/circle-help.mjs";
+import Plus from "lucide-react/dist/esm/icons/plus.mjs";
+import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
 import {
   type FormEvent,
   useCallback,
@@ -488,7 +486,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               <span>Meeting date</span>
               <Input
                 aria-label="Meeting date"
-                className="h-10 w-full sm:w-[170px]"
+                className="h-10 w-full bg-white sm:w-[170px]"
                 type="date"
                 value={meetingDate}
                 onChange={(event) => setMeetingDate(event.target.value)}
@@ -514,7 +512,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
           ) : null}
 
           <div className="mt-7 flex items-center justify-between gap-4">
-            <p className="text-sm font-medium text-slate-600">
+            <p className="text-sm font-semibold text-slate-700">
               {presentCount} of {eligibleMembers.length} here
             </p>
             <p className="text-sm text-slate-500">
@@ -538,11 +536,20 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                 const present = statuses[member.id] === true;
                 return (
                   <div key={member.id} className="flex items-center justify-between gap-4 py-4">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-slate-900">{member.name}</p>
-                      <p className="mt-1 text-sm text-slate-500">
-                        {present ? "Here" : "Away"}
-                      </p>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className={cn(
+                          "size-2 shrink-0 rounded-full",
+                          present ? "bg-emerald-500" : "bg-slate-300",
+                        )}
+                        aria-hidden="true"
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-slate-900">{member.name}</p>
+                        <p className="mt-1 text-sm text-slate-500">
+                          {present ? "Here" : "Away"}
+                        </p>
+                      </div>
                     </div>
                     <div
                       className="flex shrink-0 rounded-md border border-slate-200 bg-white p-0.5"
@@ -600,7 +607,9 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               </h3>
               <p className="mt-1 text-sm text-slate-500">Add anyone who should be counted.</p>
             </div>
-            <span className="text-sm text-slate-500">{members.length} people</span>
+            <span className="text-sm text-slate-500">
+              {members.length} {members.length === 1 ? "person" : "people"}
+            </span>
           </div>
 
           <form className="mt-5 flex gap-2" onSubmit={addMember}>
@@ -609,6 +618,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
             </label>
             <Input
               id="member-name"
+              className="bg-white"
               placeholder="Name"
               value={memberName}
               onChange={(event) => setMemberName(event.target.value)}
@@ -637,7 +647,9 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                   <div className="min-w-0">
                     <p className="truncate font-medium text-slate-900">{stat.member.name}</p>
                     <p className="mt-1 text-sm text-slate-500">
-                      {stat.present} of {stat.eligibleMeetings}, since {formatShortDate(stat.member.eligibleFrom)}
+                      {stat.percent === null
+                        ? `Added ${formatShortDate(stat.member.eligibleFrom)}`
+                        : `${stat.present} of ${stat.eligibleMeetings}, since ${formatShortDate(stat.member.eligibleFrom)}`}
                     </p>
                   </div>
                   <span className={cn("shrink-0 text-right text-sm font-semibold", statusTone(stat.percent))}>
