@@ -10,6 +10,7 @@ import {
 export const members = sqliteTable("members", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
+  eventType: text("event_type").notNull().default("unassigned"),
   eligibleFrom: text("eligible_from").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

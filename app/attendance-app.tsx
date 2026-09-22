@@ -18,12 +18,52 @@ import { cn } from "@/lib/utils";
 
 const TARGET_PERCENT = 75;
 
+const EVENT_TYPE_OPTIONS = [
+  { value: "speech", label: "Speech" },
+  { value: "policy", label: "Policy" },
+  { value: "public_forum", label: "Public Forum" },
+  { value: "lincoln_douglas", label: "Lincoln–Douglas" },
+] as const;
+
+const EVENT_TYPE_ORDER = [
+  ...EVENT_TYPE_OPTIONS.map((option) => option.value),
+  "unassigned",
+] as const;
+
+type EventType = (typeof EVENT_TYPE_ORDER)[number];
+
+function isEventType(value: unknown): value is EventType {
+  return (
+    typeof value === "string" &&
+    EVENT_TYPE_ORDER.includes(value as EventType)
+  );
+}
+
+function eventTypeLabel(eventType: EventType) {
+  return (
+    EVENT_TYPE_OPTIONS.find((option) => option.value === eventType)?.label ??
+    "Choose an event"
+  );
+}
+
+function normalizeEventType(value: unknown): EventType {
+  return isEventType(value) ? value : "unassigned";
+}
+
 type Member = {
   id: number;
   name: string;
+  eventType: EventType;
   eligibleFrom: string;
   createdAt: string;
 };
+
+function groupMembersByEventType(memberList: Member[]) {
+  return EVENT_TYPE_ORDER.map((eventType) => ({
+    eventType,
+    members: memberList.filter((member) => member.eventType === eventType),
+  })).filter((group) => group.members.length > 0);
+}
 
 type Meeting = {
   id: number;
@@ -112,9 +152,12 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
   const [meetingDate, setMeetingDate] = useState(initialDate);
   const [statuses, setStatuses] = useState<Record<number, boolean>>({});
   const [memberName, setMemberName] = useState("");
+  const [newMemberEventType, setNewMemberEventType] =
+    useState<EventType>("speech");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [updatingMemberId, setUpdatingMemberId] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -134,7 +177,12 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
         throw new Error(payload.error ?? "Could not load attendance.");
       }
 
-      setMembers(payload.members ?? []);
+      setMembers(
+        (payload.members ?? []).map((member) => ({
+          ...member,
+          eventType: normalizeEventType(member.eventType),
+        })),
+      );
       setMeetings(payload.meetings ?? []);
       setAttendance(payload.attendance ?? []);
     } catch (loadError) {
@@ -166,22 +214,28 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
           name: "add_roster_member",
           title: "Add roster member",
           description:
-            "Add a named person to the shared Eastlake Speech & Debate attendance roster.",
+            "Add a named person and event type to the shared Eastlake Speech & Debate attendance roster.",
           inputSchema: {
             type: "object",
-            properties: { name: { type: "string", minLength: 1 } },
+            properties: {
+              name: { type: "string", minLength: 1 },
+              eventType: {
+                type: "string",
+                enum: EVENT_TYPE_OPTIONS.map((option) => option.value),
+              },
+            },
             required: ["name"],
             additionalProperties: false,
           },
           annotations: { readOnlyHint: false, untrustedContentHint: false },
           execute: async (input) => {
+            const value = input && typeof input === "object" ? input : {};
             const name =
-              input &&
-              typeof input === "object" &&
-              "name" in input &&
-              typeof input.name === "string"
-                ? input.name.trim()
+              "name" in value && typeof value.name === "string"
+                ? value.name.trim()
                 : "";
+            const eventType =
+              "eventType" in value ? normalizeEventType(value.eventType) : "speech";
             if (!name) throw new Error("name is required");
 
             const response = await fetch(attendanceApiUrl(), {
@@ -190,6 +244,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               body: JSON.stringify({
                 action: "add_member",
                 name,
+                eventType,
                 eligibleFrom: localDateString(),
               }),
             });
@@ -354,6 +409,21 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     });
   }, [attendance, members, meetings]);
 
+  const eligibleMemberGroups = useMemo(
+    () => groupMembersByEventType(eligibleMembers),
+    [eligibleMembers],
+  );
+
+  const rosterGroups = useMemo(
+    () => groupMembersByEventType(members),
+    [members],
+  );
+
+  const memberStatsById = useMemo(
+    () => new Map(memberStats.map((stat) => [stat.member.id, stat])),
+    [memberStats],
+  );
+
   const presentCount = eligibleMembers.filter(
     (member) => statuses[member.id] === true,
   ).length;
@@ -376,6 +446,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
         body: JSON.stringify({
           action: "add_member",
           name,
+          eventType: newMemberEventType,
           eligibleFrom: localDateString(),
         }),
       });
@@ -385,6 +456,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
       }
 
       setMemberName("");
+      setNewMemberEventType("speech");
       await loadData();
       setNotice(`${name} is on the roster.`);
     } catch (addError) {
@@ -395,6 +467,40 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
       );
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function updateMemberEventType(memberId: number, eventType: EventType) {
+    if (eventType === "unassigned") return;
+
+    setUpdatingMemberId(memberId);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(attendanceApiUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "update_member",
+          memberId,
+          eventType,
+        }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Could not update that event type.");
+      }
+
+      await loadData();
+      setNotice("Event type updated.");
+    } catch (updateError) {
+      setError(
+        updateError instanceof Error
+          ? updateError.message
+          : "Could not update that event type.",
+      );
+    } finally {
+      setUpdatingMemberId(null);
     }
   }
 
@@ -532,58 +638,72 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
             </div>
           ) : (
             <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
-              {eligibleMembers.map((member) => {
-                const present = statuses[member.id] === true;
-                return (
-                  <div key={member.id} className="flex items-center justify-between gap-4 py-4">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span
-                        className={cn(
-                          "size-2 shrink-0 rounded-full",
-                          present ? "bg-emerald-500" : "bg-slate-300",
-                        )}
-                        aria-hidden="true"
-                      />
-                      <div className="min-w-0">
-                        <p className="truncate font-medium text-slate-900">{member.name}</p>
-                        <p className="mt-1 text-sm text-slate-500">
-                          {present ? "Here" : "Away"}
-                        </p>
-                      </div>
-                    </div>
-                    <div
-                      className="flex shrink-0 rounded-md border border-slate-200 bg-white p-0.5"
-                      aria-label={`Attendance for ${member.name}`}
-                    >
-                      <Button
-                        type="button"
-                        size="sm"
-                        aria-pressed={present}
-                        variant={present ? "default" : "ghost"}
-                        className={cn(
-                          "h-9 min-w-16 px-3",
-                          present
-                            ? "bg-[#08182b] text-white hover:bg-[#102844]"
-                            : "text-slate-600",
-                        )}
-                        onClick={() => setMemberStatus(member.id, true)}
-                      >
-                        Here
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        aria-pressed={!present}
-                        variant={!present ? "secondary" : "ghost"}
-                        className="h-9 min-w-16 px-3 text-slate-600"
-                        onClick={() => setMemberStatus(member.id, false)}
-                      >
-                        Away
-                      </Button>
-                    </div>
+              {eligibleMemberGroups.map((group) => (
+                <div key={group.eventType}>
+                  <div className="flex items-center justify-between gap-4 bg-slate-50/80 px-3 py-2.5">
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                      {eventTypeLabel(group.eventType)}
+                    </h3>
+                    <span className="text-xs text-slate-400">
+                      {group.members.length}
+                    </span>
                   </div>
-                );
-              })}
+                  <div className="divide-y divide-slate-200">
+                    {group.members.map((member) => {
+                      const present = statuses[member.id] === true;
+                      return (
+                        <div key={member.id} className="flex items-center justify-between gap-4 px-3 py-4">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span
+                              className={cn(
+                                "size-2 shrink-0 rounded-full",
+                                present ? "bg-emerald-500" : "bg-slate-300",
+                              )}
+                              aria-hidden="true"
+                            />
+                            <div className="min-w-0">
+                              <p className="truncate font-medium text-slate-900">{member.name}</p>
+                              <p className="mt-1 text-sm text-slate-500">
+                                {present ? "Here" : "Away"}
+                              </p>
+                            </div>
+                          </div>
+                          <div
+                            className="flex shrink-0 rounded-md border border-slate-200 bg-white p-0.5"
+                            aria-label={`Attendance for ${member.name}`}
+                          >
+                            <Button
+                              type="button"
+                              size="sm"
+                              aria-pressed={present}
+                              variant={present ? "default" : "ghost"}
+                              className={cn(
+                                "h-9 min-w-16 px-3",
+                                present
+                                  ? "bg-[#08182b] text-white hover:bg-[#102844]"
+                                  : "text-slate-600",
+                              )}
+                              onClick={() => setMemberStatus(member.id, true)}
+                            >
+                              Here
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              aria-pressed={!present}
+                              variant={!present ? "secondary" : "ghost"}
+                              className="h-9 min-w-16 px-3 text-slate-600"
+                              onClick={() => setMemberStatus(member.id, false)}
+                            >
+                              Away
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
@@ -612,7 +732,10 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
             </span>
           </div>
 
-          <form className="mt-5 flex gap-2" onSubmit={addMember}>
+          <form
+            className="mt-5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto]"
+            onSubmit={addMember}
+          >
             <label className="sr-only" htmlFor="member-name">
               Add a person
             </label>
@@ -624,40 +747,117 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               onChange={(event) => setMemberName(event.target.value)}
               disabled={adding}
             />
+            <label className="sr-only" htmlFor="member-event-type">
+              Event type
+            </label>
+            <select
+              id="member-event-type"
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+              value={newMemberEventType}
+              onChange={(event) =>
+                setNewMemberEventType(normalizeEventType(event.target.value))
+              }
+              disabled={adding}
+            >
+              {EVENT_TYPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             <Button
               type="submit"
-              size="icon"
-              className="bg-[#08182b] text-white hover:bg-[#102844]"
+              size="default"
+              className="bg-[#08182b] text-white hover:bg-[#102844] sm:size-icon"
               aria-label="Add person"
               disabled={adding}
             >
               <Plus aria-hidden="true" />
+              <span className="sm:hidden">Add person</span>
             </Button>
           </form>
           <p className="mt-2 text-xs text-slate-500">
-            New people start counting on the day they are added.
+            Choose an event. New people start counting on the day they are added.
           </p>
 
           <ul className="mt-5 divide-y divide-slate-200 border-y border-slate-200">
             {members.length === 0 ? (
               <li className="py-4 text-sm text-slate-500">No one added yet.</li>
             ) : (
-              memberStats.map((stat) => (
-                <li key={stat.member.id} className="flex items-center justify-between gap-4 py-4">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium text-slate-900">{stat.member.name}</p>
-                    <p className="mt-1 text-sm text-slate-500">
-                      {stat.percent === null
-                        ? `Added ${formatShortDate(stat.member.eligibleFrom)}`
-                        : `${stat.present} of ${stat.eligibleMeetings}, since ${formatShortDate(stat.member.eligibleFrom)}`}
-                    </p>
+              rosterGroups.map((group) => (
+                <li key={group.eventType}>
+                  <div className="flex items-center justify-between gap-4 bg-slate-50/80 px-3 py-2.5">
+                    <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                      {eventTypeLabel(group.eventType)}
+                    </h4>
+                    <span className="text-xs text-slate-400">
+                      {group.members.length}
+                    </span>
                   </div>
-                  <span className={cn("shrink-0 text-right text-sm font-semibold", statusTone(stat.percent))}>
-                    <span className="block">{stat.percent === null ? "New" : `${stat.percent}%`}</span>
-                    {stat.percent === null ? null : (
-                      <span className="block text-xs font-medium">{statusLabel(stat.percent)}</span>
-                    )}
-                  </span>
+                  <div className="divide-y divide-slate-200">
+                    {group.members.map((member) => {
+                      const stat = memberStatsById.get(member.id);
+                      if (!stat) return null;
+
+                      return (
+                        <div
+                          key={member.id}
+                          className="flex items-center justify-between gap-3 px-3 py-4"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate font-medium text-slate-900">
+                              {stat.member.name}
+                            </p>
+                            <p className="mt-1 text-sm text-slate-500">
+                              {stat.percent === null
+                                ? `Added ${formatShortDate(stat.member.eligibleFrom)}`
+                                : `${stat.present} of ${stat.eligibleMeetings}, since ${formatShortDate(stat.member.eligibleFrom)}`}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+                            <label className="sr-only" htmlFor={`event-type-${member.id}`}>
+                              Event type for {stat.member.name}
+                            </label>
+                            <select
+                              id={`event-type-${member.id}`}
+                              aria-label={`Event type for ${stat.member.name}`}
+                              value={stat.member.eventType}
+                              disabled={updatingMemberId === member.id}
+                              onChange={(event) =>
+                                void updateMemberEventType(
+                                  member.id,
+                                  normalizeEventType(event.target.value),
+                                )
+                              }
+                              className="h-8 max-w-[138px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <option value="unassigned">Choose event</option>
+                              {EVENT_TYPE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                            <span
+                              className={cn(
+                                "min-w-16 text-right text-sm font-semibold",
+                                statusTone(stat.percent),
+                              )}
+                            >
+                              <span className="block">
+                                {stat.percent === null ? "New" : `${stat.percent}%`}
+                              </span>
+                              {stat.percent === null ? null : (
+                                <span className="block text-xs font-medium">
+                                  {statusLabel(stat.percent)}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </li>
               ))
             )}

@@ -8,6 +8,13 @@
       "when": 1789442353103,
       "tag": "0000_huge_masque",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1790036181000,
+      "tag": "0001_add_member_event_type",
+      "breakpoints": true
     }
   ]
 }
