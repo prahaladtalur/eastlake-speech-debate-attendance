@@ -390,18 +390,24 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     return lookup;
   }, [attendance]);
 
+  const mondayMeetings = useMemo(
+    () => meetings.filter((meeting) => isMondayDate(meeting.meetingDate)),
+    [meetings],
+  );
+
   const selectedMeeting = useMemo(
-    () => meetings.find((meeting) => meeting.meetingDate === meetingDate),
-    [meetingDate, meetings],
+    () =>
+      mondayMeetings.find((meeting) => meeting.meetingDate === meetingDate),
+    [meetingDate, mondayMeetings],
   );
 
   const meetingOptions = useMemo(() => {
     const dates = new Set([
       ...recentMondays(initialDate, 26),
-      ...meetings.map((meeting) => meeting.meetingDate),
+      ...mondayMeetings.map((meeting) => meeting.meetingDate),
     ]);
     return [...dates].sort((left, right) => right.localeCompare(left));
-  }, [initialDate, meetings]);
+  }, [initialDate, mondayMeetings]);
 
   const eligibleMembers = useMemo(
     () => members.filter((member) => member.eligibleFrom <= meetingDate),
@@ -426,7 +432,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
   const memberStats = useMemo<MemberStats[]>(() => {
     return members.map((member) => {
       const eligibleMeetingIds = new Set(
-        meetings
+        mondayMeetings
           .filter((meeting) => meeting.meetingDate >= member.eligibleFrom)
           .map((meeting) => meeting.id),
       );
@@ -448,7 +454,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
             : Math.round((present / eligibleMeetings) * 100),
       };
     });
-  }, [attendance, members, meetings]);
+  }, [attendance, members, mondayMeetings]);
 
   const eligibleMemberGroups = useMemo(
     () => groupMembersByEventType(eligibleMembers),
@@ -914,9 +920,9 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
           <div className="flex items-center justify-between gap-4">
             <div>
               <h3 id="history-heading" className="text-lg font-semibold tracking-tight">
-                Saved dates
+                Saved Mondays
               </h3>
-              <p className="mt-1 text-sm text-slate-500">Open an earlier meeting to edit it.</p>
+              <p className="mt-1 text-sm text-slate-500">Open an earlier Monday to edit it.</p>
             </div>
             <Button
               type="button"
@@ -929,11 +935,11 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
             </Button>
           </div>
 
-          {meetings.length === 0 ? (
-            <p className="mt-5 text-sm text-slate-500">No saved dates yet.</p>
+          {mondayMeetings.length === 0 ? (
+            <p className="mt-5 text-sm text-slate-500">No saved Mondays yet.</p>
           ) : (
             <ul className="mt-5 divide-y divide-slate-200 border-y border-slate-200">
-              {meetings.slice(0, 6).map((meeting) => {
+              {mondayMeetings.slice(0, 6).map((meeting) => {
                 const total = members.filter(
                   (member) => member.eligibleFrom <= meeting.meetingDate,
                 ).length;
