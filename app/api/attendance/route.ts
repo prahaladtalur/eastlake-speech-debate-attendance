@@ -34,6 +34,10 @@ function isDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function isMondayDate(value: string) {
+  return new Date(`${value}T12:00:00Z`).getUTCDay() === 1;
+}
+
 function cleanName(value: unknown) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
 }
@@ -186,6 +190,13 @@ export async function POST(request: Request) {
       if (!isDate(payload.meetingDate)) {
         return jsonResponse(request,
           { error: "Choose a valid meeting date." },
+          { status: 400 },
+        );
+      }
+
+      if (!isMondayDate(payload.meetingDate)) {
+        return jsonResponse(request,
+          { error: "Meetings are scheduled for Mondays." },
           { status: 400 },
         );
       }

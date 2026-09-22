@@ -128,6 +128,38 @@ function formatDate(value: string) {
   }).format(new Date(`${value}T12:00:00`));
 }
 
+function formatMeetingDate(value: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${value}T12:00:00`));
+}
+
+function addDays(value: string, amount: number) {
+  const date = new Date(`${value}T12:00:00`);
+  date.setDate(date.getDate() + amount);
+  return date.toISOString().slice(0, 10);
+}
+
+function mondayDate(value: string) {
+  const date = new Date(`${value}T12:00:00`);
+  const daysSinceMonday = (date.getDay() + 6) % 7;
+  return addDays(value, -daysSinceMonday);
+}
+
+function isMondayDate(value: string) {
+  return new Date(`${value}T12:00:00`).getDay() === 1;
+}
+
+function recentMondays(value: string, count: number) {
+  const currentMonday = mondayDate(value);
+  return Array.from({ length: count }, (_, index) =>
+    addDays(currentMonday, index * -7),
+  );
+}
+
 function formatShortDate(value: string) {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -149,7 +181,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
   const [members, setMembers] = useState<Member[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
-  const [meetingDate, setMeetingDate] = useState(initialDate);
+  const [meetingDate, setMeetingDate] = useState(() => mondayDate(initialDate));
   const [statuses, setStatuses] = useState<Record<number, boolean>>({});
   const [memberName, setMemberName] = useState("");
   const [newMemberEventType, setNewMemberEventType] =
@@ -300,11 +332,12 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
 
             if (
               !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+              !isMondayDate(date) ||
               !statusesValue ||
               Object.keys(statusesValue).length === 0
             ) {
               throw new Error(
-                "meetingDate and at least one member status are required",
+                "A Monday meetingDate and at least one member status are required",
               );
             }
             if (
@@ -361,6 +394,14 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     () => meetings.find((meeting) => meeting.meetingDate === meetingDate),
     [meetingDate, meetings],
   );
+
+  const meetingOptions = useMemo(() => {
+    const dates = new Set([
+      ...recentMondays(initialDate, 26),
+      ...meetings.map((meeting) => meeting.meetingDate),
+    ]);
+    return [...dates].sort((left, right) => right.localeCompare(left));
+  }, [initialDate, meetings]);
 
   const eligibleMembers = useMemo(
     () => members.filter((member) => member.eligibleFrom <= meetingDate),
@@ -589,14 +630,19 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               </p>
             </div>
             <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-              <span>Meeting date</span>
-              <Input
-                aria-label="Meeting date"
-                className="h-10 w-full bg-white sm:w-[170px]"
-                type="date"
+              <span>Monday meeting</span>
+              <select
+                aria-label="Monday meeting"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 sm:w-[210px]"
                 value={meetingDate}
                 onChange={(event) => setMeetingDate(event.target.value)}
-              />
+              >
+                {meetingOptions.map((date) => (
+                  <option key={date} value={date}>
+                    {formatMeetingDate(date)}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
 
@@ -622,7 +668,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               {presentCount} of {eligibleMembers.length} here
             </p>
             <p className="text-sm text-slate-500">
-              {selectedMeeting ? "Editing saved date" : "New date"}
+              {selectedMeeting ? "Editing saved Monday" : "New Monday"}
             </p>
           </div>
 
