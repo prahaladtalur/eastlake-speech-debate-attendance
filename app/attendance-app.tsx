@@ -145,6 +145,17 @@ function localDateString() {
   return offsetDate.toISOString().slice(0, 10);
 }
 
+function eastlakeDateString() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -270,11 +281,9 @@ function downloadAttendanceSpreadsheet(
 
 export default function AttendanceApp({
   initialDate,
-  initialView = "admin",
   initialEventType,
 }: {
   initialDate: string;
-  initialView?: "admin" | "student";
   initialEventType?: string;
 }) {
   const [members, setMembers] = useState<Member[]>([]);
@@ -293,7 +302,6 @@ export default function AttendanceApp({
   const [updatingMemberId, setUpdatingMemberId] = useState<number | null>(null);
   const [deletingMemberId, setDeletingMemberId] = useState<number | null>(null);
   const [countsTowardAttendance, setCountsTowardAttendance] = useState(true);
-  const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<AdminTab>("attendance");
   const [activeAttendanceEvent, setActiveAttendanceEvent] = useState<EventType>(
     () => isEventType(initialEventType) ? initialEventType : "speech",
@@ -368,8 +376,6 @@ export default function AttendanceApp({
   }, [loadData]);
 
   useEffect(() => {
-    if (initialView === "student") return;
-
     const context = (document as Document & { modelContext?: WebMcpContext })
       .modelContext;
     if (!context?.registerTool) return;
@@ -518,7 +524,7 @@ export default function AttendanceApp({
 
     void registerTools().catch(() => undefined);
     return () => lifecycle.abort();
-  }, [initialView, loadData, selectMeetingDate]);
+  }, [loadData, selectMeetingDate]);
 
   const attendanceLookup = useMemo(() => {
     const lookup = new Map<number, Map<number, boolean>>();
@@ -577,12 +583,14 @@ export default function AttendanceApp({
     setCountsTowardAttendance(selectedMeeting?.countsTowardAttendance ?? true);
   }, [attendanceLookup, eligibleMembers, selectedMeeting]);
 
+  const attendanceAsOf = eastlakeDateString();
   const memberStats = useMemo<MemberStats[]>(() => {
     return members.map((member) => {
       const countedMeetings = mondayMeetings.filter(
         (meeting) =>
           meetingCountsTowardRate(meeting) &&
-          meeting.meetingDate >= member.eligibleFrom,
+          meeting.meetingDate >= member.eligibleFrom &&
+          meeting.meetingDate <= attendanceAsOf,
       );
       const firstPresentDate =
         countedMeetings
@@ -612,7 +620,7 @@ export default function AttendanceApp({
           : (present / eligibleMeetings.length) * 100,
       };
     });
-  }, [attendanceLookup, members, mondayMeetings]);
+  }, [attendanceAsOf, attendanceLookup, members, mondayMeetings]);
 
   const attendanceEventTabs = useMemo(
     () =>
@@ -643,13 +651,6 @@ export default function AttendanceApp({
   const presentCount = activeEventMembers.filter(
     (member) => statuses[member.id] === true,
   ).length;
-
-  const selectedStudent = members.find(
-    (member) => member.id === selectedStudentId,
-  );
-  const selectedStudentStats = selectedStudent
-    ? memberStatsById.get(selectedStudent.id)
-    : undefined;
 
   async function addMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -862,150 +863,6 @@ export default function AttendanceApp({
     ).length;
   }
 
-  if (initialView === "student") {
-    return (
-      <main className="min-h-screen bg-[#f7f8f8] text-slate-950">
-        <header className="border-b border-slate-200 bg-white">
-          <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-4 py-5 sm:px-6">
-            <div className="flex items-center gap-3">
-              <span className="size-2.5 rounded-full bg-[#e8652b]" aria-hidden="true" />
-              <div>
-                <h1 className="text-base font-semibold leading-tight tracking-tight sm:text-lg">
-                  Eastlake Speech &amp; Debate
-                </h1>
-                <p className="mt-0.5 text-sm text-slate-500">Student attendance</p>
-              </div>
-            </div>
-            {selectedStudent ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setSelectedStudentId(null)}
-              >
-                Choose name
-              </Button>
-            ) : null}
-          </div>
-        </header>
-
-        <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
-          {loading ? (
-            <p className="text-sm text-slate-500" role="status">Loading roster…</p>
-          ) : error ? (
-            <p className="text-sm text-red-700" role="alert">{error}</p>
-          ) : selectedStudent && selectedStudentStats ? (
-            <section aria-labelledby="student-heading">
-              <p className="text-sm font-medium text-slate-500">
-                {eventTypeLabel(selectedStudent.eventType)}
-              </p>
-              <h2 id="student-heading" className="mt-1 text-2xl font-semibold tracking-tight">
-                {selectedStudent.name}
-              </h2>
-
-              <div className="mt-6 grid gap-3 sm:grid-cols-3">
-                <div className="rounded-lg border border-slate-200 bg-white p-4">
-                  <p className="text-sm text-slate-500">Attendance</p>
-                  <p className={cn("mt-1 text-2xl font-semibold", statusTone(selectedStudentStats.percent))}>
-                    {formatPercent(selectedStudentStats.percent)}
-                  </p>
-                  <p className={cn("mt-1 text-xs font-medium", statusTone(selectedStudentStats.percent))}>
-                    {statusLabel(selectedStudentStats.percent)}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-4">
-                  <p className="text-sm text-slate-500">Meetings here</p>
-                  <p className="mt-1 text-2xl font-semibold">
-                    {selectedStudentStats.present} / {selectedStudentStats.eligibleMeetings}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-4">
-                  <p className="text-sm text-slate-500">Attendance started</p>
-                  <p className="mt-1 text-lg font-semibold">
-                    {selectedStudentStats.firstPresentDate
-                      ? formatDate(selectedStudentStats.firstPresentDate)
-                      : "Not started"}
-                  </p>
-                </div>
-              </div>
-
-              <div className="mt-8">
-                <h3 className="text-lg font-semibold tracking-tight">Counted Mondays</h3>
-                {selectedStudentStats.firstPresentDate ? (
-                  <ul className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
-                    {mondayMeetings
-                      .filter(
-                        (meeting) =>
-                          meetingCountsTowardRate(meeting) &&
-                          meeting.meetingDate >= selectedStudentStats.firstPresentDate!,
-                      )
-                      .sort((left, right) => left.meetingDate.localeCompare(right.meetingDate))
-                      .map((meeting) => {
-                        const present = attendanceLookup.get(meeting.id)?.get(selectedStudent.id);
-                        return (
-                          <li key={meeting.id} className="flex items-center justify-between gap-4 py-3 text-sm">
-                            <span className="font-medium text-slate-800">
-                              {formatDate(meeting.meetingDate)}
-                            </span>
-                            <span className={present ? "font-medium text-emerald-700" : "text-slate-500"}>
-                              {present === true ? "Here" : present === false ? "Away" : "Not recorded"}
-                            </span>
-                          </li>
-                        );
-                      })}
-                  </ul>
-                ) : (
-                  <p className="mt-2 text-sm text-slate-500">
-                    Your attendance starts after you are first marked Here at a counted Monday meeting.
-                  </p>
-                )}
-              </div>
-              <p className="mt-8 rounded-lg bg-white px-4 py-3 text-sm leading-6 text-slate-600">
-                If something looks wrong, contact your coach.
-              </p>
-            </section>
-          ) : members.length === 0 ? (
-            <p className="text-sm text-slate-500">The roster is empty right now.</p>
-          ) : (
-            <section aria-labelledby="choose-student-heading">
-              <h2 id="choose-student-heading" className="text-2xl font-semibold tracking-tight">
-                Choose your name
-              </h2>
-              <p className="mt-2 text-sm text-slate-500">
-                View your attendance percentage and counted meeting history.
-              </p>
-              <div className="mt-6 space-y-5">
-                {rosterGroups.map((group) => (
-                  <section key={group.eventType} aria-label={eventTypeLabel(group.eventType)}>
-                    <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                      {eventTypeLabel(group.eventType)}
-                    </h3>
-                    <ul className="divide-y divide-slate-200 border-y border-slate-200 bg-white">
-                      {group.members.map((member) => (
-                        <li key={member.id}>
-                          <button
-                            type="button"
-                            className="w-full px-3 py-3 text-left font-medium transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#e8652b]"
-                            onClick={() => setSelectedStudentId(member.id)}
-                          >
-                            {member.name}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
-              </div>
-              <p className="mt-6 text-xs leading-5 text-slate-500">
-                This page uses a name picker without sign-in. Anyone with the link can choose a name.
-              </p>
-            </section>
-          )}
-        </div>
-      </main>
-    );
-  }
-
   return (
     <main className="min-h-screen bg-[#f7f8f8] text-slate-950">
       <header className="border-b border-slate-200 bg-white">
@@ -1019,12 +876,6 @@ export default function AttendanceApp({
               <p className="mt-0.5 text-sm text-slate-500">Attendance</p>
             </div>
           </div>
-          <a
-            className="text-sm font-medium text-slate-600 underline-offset-4 hover:underline"
-            href="?view=student"
-          >
-            Student view
-          </a>
         </div>
       </header>
 

@@ -30,7 +30,6 @@ createRoot(document.getElementById("root")!).render(
         new URLSearchParams(window.location.search).get("meeting") ?? undefined,
         eastlakeDate(),
       )}
-      initialView={requestedParams.get("view") === "student" ? "student" : "admin"}
       initialEventType={requestedParams.get("event") ?? undefined}
     />
   </StrictMode>,

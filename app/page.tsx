@@ -18,7 +18,6 @@ export default async function Home({
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const view = params?.view === "student" ? "student" : "admin";
   const initialDate = getRequestedMondayDate(params?.meeting, eastlakeDate());
   const initialEventType = Array.isArray(params?.event)
     ? params.event[0]
@@ -27,7 +26,6 @@ export default async function Home({
   return (
     <AttendanceApp
       initialDate={initialDate}
-      initialView={view}
       initialEventType={initialEventType}
     />
   );

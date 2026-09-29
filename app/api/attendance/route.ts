@@ -92,12 +92,14 @@ function isEventType(value: unknown): value is EventType {
 }
 
 const GITHUB_PAGES_ORIGIN = "https://prahaladtalur.github.io";
+const STUDENT_PAGES_ORIGIN = "https://eastlake-student-attendance.pages.dev";
 
 function corsHeaders(request: Request) {
   const origin = request.headers.get("origin");
   const isAllowedOrigin =
     !origin ||
     origin === GITHUB_PAGES_ORIGIN ||
+    origin === STUDENT_PAGES_ORIGIN ||
     /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 
   return {
