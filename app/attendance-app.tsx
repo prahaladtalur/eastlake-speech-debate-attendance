@@ -2,8 +2,10 @@
 
 import Check from "lucide-react/dist/esm/icons/check.mjs";
 import CircleHelp from "lucide-react/dist/esm/icons/circle-help.mjs";
+import Download from "lucide-react/dist/esm/icons/download.mjs";
 import Plus from "lucide-react/dist/esm/icons/plus.mjs";
 import RefreshCw from "lucide-react/dist/esm/icons/refresh-cw.mjs";
+import Trash2 from "lucide-react/dist/esm/icons/trash-2.mjs";
 import {
   type FormEvent,
   useCallback,
@@ -68,6 +70,7 @@ function groupMembersByEventType(memberList: Member[]) {
 type Meeting = {
   id: number;
   meetingDate: string;
+  countsTowardAttendance: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -82,6 +85,7 @@ type AttendanceRecord = {
 
 type MemberStats = {
   member: Member;
+  firstPresentDate: string | null;
   eligibleMeetings: number;
   present: number;
   percent: number | null;
@@ -168,8 +172,17 @@ function formatShortDate(value: string) {
 }
 
 function statusLabel(percent: number | null) {
-  if (percent === null) return "New";
+  if (percent === null) return "Not started";
   return percent >= TARGET_PERCENT ? "Passing" : "Below 75%";
+}
+
+function formatPercent(percent: number | null) {
+  if (percent === null) return "—";
+  const rounded = Number(percent.toFixed(1));
+  if (percent < TARGET_PERCENT && rounded >= TARGET_PERCENT) {
+    return `${Math.floor(percent * 100) / 100}%`;
+  }
+  return `${rounded}%`;
 }
 
 function statusTone(percent: number | null) {
@@ -177,7 +190,74 @@ function statusTone(percent: number | null) {
   return percent >= TARGET_PERCENT ? "text-emerald-700" : "text-orange-700";
 }
 
-export default function AttendanceApp({ initialDate }: { initialDate: string }) {
+function meetingCountsTowardRate(meeting: Meeting) {
+  return isMondayDate(meeting.meetingDate) && meeting.countsTowardAttendance;
+}
+
+function csvCell(value: string | number) {
+  const text = String(value);
+  const safeText = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replaceAll('"', '""')}"`;
+}
+
+function downloadAttendanceSpreadsheet(
+  members: Member[],
+  meetings: Meeting[],
+  memberStatsById: Map<number, MemberStats>,
+  attendanceLookup: Map<number, Map<number, boolean>>,
+) {
+  const sortedMeetings = [...meetings].sort((left, right) =>
+    left.meetingDate.localeCompare(right.meetingDate),
+  );
+  const headers = [
+    "Name",
+    "Event",
+    "First marked here",
+    "Counted Mondays",
+    "Here",
+    "Attendance %",
+    ...sortedMeetings.map(
+      (meeting) =>
+        `${formatDate(meeting.meetingDate)} (${meetingCountsTowardRate(meeting) ? "counted" : "not counted"})`,
+    ),
+  ];
+  const rows = members.map((member) => {
+    const stat = memberStatsById.get(member.id);
+    return [
+      member.name,
+      eventTypeLabel(member.eventType),
+      stat?.firstPresentDate ? formatDate(stat.firstPresentDate) : "Not started",
+      stat?.eligibleMeetings ?? 0,
+      stat?.present ?? 0,
+      stat?.percent === null || stat?.percent === undefined
+        ? "Not started"
+        : formatPercent(stat.percent),
+      ...sortedMeetings.map((meeting) => {
+        const status = attendanceLookup.get(meeting.id)?.get(member.id);
+        if (status !== undefined) return status ? "Here" : "Away";
+        return meeting.meetingDate < member.eligibleFrom ? "Not on roster" : "Not recorded";
+      }),
+    ];
+  });
+  const csv = [headers, ...rows]
+    .map((row) => row.map(csvCell).join(","))
+    .join("\r\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `eastlake-attendance-${localDateString()}.csv`;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+export default function AttendanceApp({
+  initialDate,
+  initialView = "admin",
+}: {
+  initialDate: string;
+  initialView?: "admin" | "student";
+}) {
   const [members, setMembers] = useState<Member[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
@@ -190,6 +270,9 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
   const [updatingMemberId, setUpdatingMemberId] = useState<number | null>(null);
+  const [deletingMemberId, setDeletingMemberId] = useState<number | null>(null);
+  const [countsTowardAttendance, setCountsTowardAttendance] = useState(true);
+  const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -215,7 +298,12 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
           eventType: normalizeEventType(member.eventType),
         })),
       );
-      setMeetings(payload.meetings ?? []);
+      setMeetings(
+        (payload.meetings ?? []).map((meeting) => ({
+          ...meeting,
+          countsTowardAttendance: meeting.countsTowardAttendance !== false,
+        })),
+      );
       setAttendance(payload.attendance ?? []);
     } catch (loadError) {
       setError(
@@ -235,6 +323,8 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
   }, [loadData]);
 
   useEffect(() => {
+    if (initialView === "student") return;
+
     const context = (document as Document & { modelContext?: WebMcpContext })
       .modelContext;
     if (!context?.registerTool) return;
@@ -308,6 +398,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                 type: "string",
                 pattern: "^\\d{4}-\\d{2}-\\d{2}$",
               },
+              countsTowardAttendance: { type: "boolean" },
               statuses: {
                 type: "object",
                 additionalProperties: { type: "boolean" },
@@ -354,6 +445,11 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               body: JSON.stringify({
                 action: "save_meeting",
                 meetingDate: date,
+                countsTowardAttendance:
+                  "countsTowardAttendance" in value &&
+                  typeof value.countsTowardAttendance === "boolean"
+                    ? value.countsTowardAttendance
+                    : true,
                 statuses: statusesValue,
               }),
             });
@@ -377,7 +473,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
 
     void registerTools().catch(() => undefined);
     return () => lifecycle.abort();
-  }, [loadData]);
+  }, [initialView, loadData]);
 
   const attendanceLookup = useMemo(() => {
     const lookup = new Map<number, Map<number, boolean>>();
@@ -421,40 +517,51 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     const nextStatuses: Record<number, boolean> = {};
 
     for (const member of eligibleMembers) {
-      nextStatuses[member.id] = savedStatuses?.get(member.id) ?? false;
+      nextStatuses[member.id] = savedStatuses?.get(member.id) ?? !selectedMeeting;
     }
 
     // The saved record is the source of truth whenever the date or API data changes.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setStatuses(nextStatuses);
+    setCountsTowardAttendance(selectedMeeting?.countsTowardAttendance ?? true);
   }, [attendanceLookup, eligibleMembers, selectedMeeting]);
 
   const memberStats = useMemo<MemberStats[]>(() => {
     return members.map((member) => {
-      const eligibleMeetingIds = new Set(
-        mondayMeetings
-          .filter((meeting) => meeting.meetingDate >= member.eligibleFrom)
-          .map((meeting) => meeting.id),
+      const countedMeetings = mondayMeetings.filter(
+        (meeting) =>
+          meetingCountsTowardRate(meeting) &&
+          meeting.meetingDate >= member.eligibleFrom,
       );
-      const present = attendance.filter(
-        (record) =>
-          record.memberId === member.id &&
-          Boolean(record.present) &&
-          eligibleMeetingIds.has(record.meetingId),
+      const firstPresentDate =
+        countedMeetings
+          .filter(
+            (meeting) =>
+              attendanceLookup.get(meeting.id)?.get(member.id) === true,
+          )
+          .map((meeting) => meeting.meetingDate)
+          .sort()[0] ?? null;
+      const eligibleMeetings = firstPresentDate
+        ? countedMeetings.filter(
+            (meeting) => meeting.meetingDate >= firstPresentDate,
+          )
+        : [];
+      const present = eligibleMeetings.filter(
+        (meeting) => attendanceLookup.get(meeting.id)?.get(member.id) === true,
       ).length;
-      const eligibleMeetings = eligibleMeetingIds.size;
 
       return {
         member,
-        eligibleMeetings,
+        firstPresentDate,
+        eligibleMeetings: eligibleMeetings.length,
         present,
-        percent:
-          eligibleMeetings === 0
-            ? null
-            : Math.round((present / eligibleMeetings) * 100),
+      percent:
+        eligibleMeetings.length === 0
+          ? null
+          : (present / eligibleMeetings.length) * 100,
       };
     });
-  }, [attendance, members, mondayMeetings]);
+  }, [attendanceLookup, members, mondayMeetings]);
 
   const eligibleMemberGroups = useMemo(
     () => groupMembersByEventType(eligibleMembers),
@@ -474,6 +581,13 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
   const presentCount = eligibleMembers.filter(
     (member) => statuses[member.id] === true,
   ).length;
+
+  const selectedStudent = members.find(
+    (member) => member.id === selectedStudentId,
+  );
+  const selectedStudentStats = selectedStudent
+    ? memberStatsById.get(selectedStudent.id)
+    : undefined;
 
   async function addMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -551,6 +665,42 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     }
   }
 
+  async function deleteMember(memberId: number) {
+    const member = members.find((currentMember) => currentMember.id === memberId);
+    if (!member) return;
+
+    const confirmed = window.confirm(
+      `Remove ${member.name} from the roster? Their saved attendance will also be deleted.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingMemberId(memberId);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(attendanceApiUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_member", memberId }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Could not remove that person.");
+      }
+
+      await loadData();
+      setNotice(`${member.name} was removed from the roster.`);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Could not remove that person.",
+      );
+    } finally {
+      setDeletingMemberId(null);
+    }
+  }
+
   async function saveMeeting() {
     if (eligibleMembers.length === 0) {
       setError("Add at least one person before saving attendance.");
@@ -567,6 +717,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
         body: JSON.stringify({
           action: "save_meeting",
           meetingDate,
+          countsTowardAttendance,
           statuses: Object.fromEntries(
             eligibleMembers.map((member) => [
               String(member.id),
@@ -607,6 +758,150 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
     ).length;
   }
 
+  if (initialView === "student") {
+    return (
+      <main className="min-h-screen bg-[#f7f8f8] text-slate-950">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-4 py-5 sm:px-6">
+            <div className="flex items-center gap-3">
+              <span className="size-2.5 rounded-full bg-[#e8652b]" aria-hidden="true" />
+              <div>
+                <h1 className="text-base font-semibold leading-tight tracking-tight sm:text-lg">
+                  Eastlake Speech &amp; Debate
+                </h1>
+                <p className="mt-0.5 text-sm text-slate-500">Student attendance</p>
+              </div>
+            </div>
+            {selectedStudent ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedStudentId(null)}
+              >
+                Choose name
+              </Button>
+            ) : null}
+          </div>
+        </header>
+
+        <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
+          {loading ? (
+            <p className="text-sm text-slate-500" role="status">Loading roster…</p>
+          ) : error ? (
+            <p className="text-sm text-red-700" role="alert">{error}</p>
+          ) : selectedStudent && selectedStudentStats ? (
+            <section aria-labelledby="student-heading">
+              <p className="text-sm font-medium text-slate-500">
+                {eventTypeLabel(selectedStudent.eventType)}
+              </p>
+              <h2 id="student-heading" className="mt-1 text-2xl font-semibold tracking-tight">
+                {selectedStudent.name}
+              </h2>
+
+              <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border border-slate-200 bg-white p-4">
+                  <p className="text-sm text-slate-500">Attendance</p>
+                  <p className={cn("mt-1 text-2xl font-semibold", statusTone(selectedStudentStats.percent))}>
+                    {formatPercent(selectedStudentStats.percent)}
+                  </p>
+                  <p className={cn("mt-1 text-xs font-medium", statusTone(selectedStudentStats.percent))}>
+                    {statusLabel(selectedStudentStats.percent)}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-4">
+                  <p className="text-sm text-slate-500">Meetings here</p>
+                  <p className="mt-1 text-2xl font-semibold">
+                    {selectedStudentStats.present} / {selectedStudentStats.eligibleMeetings}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-4">
+                  <p className="text-sm text-slate-500">Attendance started</p>
+                  <p className="mt-1 text-lg font-semibold">
+                    {selectedStudentStats.firstPresentDate
+                      ? formatDate(selectedStudentStats.firstPresentDate)
+                      : "Not started"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-8">
+                <h3 className="text-lg font-semibold tracking-tight">Counted Mondays</h3>
+                {selectedStudentStats.firstPresentDate ? (
+                  <ul className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
+                    {mondayMeetings
+                      .filter(
+                        (meeting) =>
+                          meetingCountsTowardRate(meeting) &&
+                          meeting.meetingDate >= selectedStudentStats.firstPresentDate!,
+                      )
+                      .sort((left, right) => left.meetingDate.localeCompare(right.meetingDate))
+                      .map((meeting) => {
+                        const present = attendanceLookup.get(meeting.id)?.get(selectedStudent.id);
+                        return (
+                          <li key={meeting.id} className="flex items-center justify-between gap-4 py-3 text-sm">
+                            <span className="font-medium text-slate-800">
+                              {formatDate(meeting.meetingDate)}
+                            </span>
+                            <span className={present ? "font-medium text-emerald-700" : "text-slate-500"}>
+                              {present === true ? "Here" : present === false ? "Away" : "Not recorded"}
+                            </span>
+                          </li>
+                        );
+                      })}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-sm text-slate-500">
+                    Your attendance starts after you are first marked Here at a counted Monday meeting.
+                  </p>
+                )}
+              </div>
+              <p className="mt-8 rounded-lg bg-white px-4 py-3 text-sm leading-6 text-slate-600">
+                If something looks wrong, contact your coach.
+              </p>
+            </section>
+          ) : members.length === 0 ? (
+            <p className="text-sm text-slate-500">The roster is empty right now.</p>
+          ) : (
+            <section aria-labelledby="choose-student-heading">
+              <h2 id="choose-student-heading" className="text-2xl font-semibold tracking-tight">
+                Choose your name
+              </h2>
+              <p className="mt-2 text-sm text-slate-500">
+                View your attendance percentage and counted meeting history.
+              </p>
+              <div className="mt-6 space-y-5">
+                {rosterGroups.map((group) => (
+                  <section key={group.eventType} aria-label={eventTypeLabel(group.eventType)}>
+                    <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                      {eventTypeLabel(group.eventType)}
+                    </h3>
+                    <ul className="divide-y divide-slate-200 border-y border-slate-200 bg-white">
+                      {group.members.map((member) => (
+                        <li key={member.id}>
+                          <button
+                            type="button"
+                            className="w-full px-3 py-3 text-left font-medium transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#e8652b]"
+                            onClick={() => setSelectedStudentId(member.id)}
+                          >
+                            {member.name}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </div>
+              <p className="mt-6 text-xs leading-5 text-slate-500">
+                This page uses a name picker without sign-in. Anyone with the link can choose a name.
+              </p>
+            </section>
+          )}
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#f7f8f8] text-slate-950">
       <header className="border-b border-slate-200 bg-white">
@@ -620,7 +915,12 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               <p className="mt-0.5 text-sm text-slate-500">Attendance</p>
             </div>
           </div>
-          <span className="text-xs font-medium text-slate-500">Shared roster</span>
+          <a
+            className="text-sm font-medium text-slate-600 underline-offset-4 hover:underline"
+            href="?view=student"
+          >
+            Student view
+          </a>
         </div>
       </header>
 
@@ -635,21 +935,32 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                 Mark each person, then save. {TARGET_PERCENT}%+ is passing.
               </p>
             </div>
-            <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-              <span>Monday meeting</span>
-              <select
-                aria-label="Monday meeting"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 sm:w-[210px]"
-                value={meetingDate}
-                onChange={(event) => setMeetingDate(event.target.value)}
-              >
-                {meetingOptions.map((date) => (
-                  <option key={date} value={date}>
-                    {formatMeetingDate(date)}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="grid gap-3">
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                <span>Monday meeting</span>
+                <select
+                  aria-label="Monday meeting"
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 sm:w-[260px]"
+                  value={meetingDate}
+                  onChange={(event) => setMeetingDate(event.target.value)}
+                >
+                  {meetingOptions.map((date) => (
+                    <option key={date} value={date}>
+                      {formatMeetingDate(date)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={countsTowardAttendance}
+                  onChange={(event) => setCountsTowardAttendance(event.target.checked)}
+                  className="mt-0.5 size-4 accent-[#e8652b]"
+                />
+                <span>Count this meeting toward attendance</span>
+              </label>
+            </div>
           </div>
 
           {notice ? (
@@ -677,6 +988,11 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               {selectedMeeting ? "Editing saved Monday" : "New Monday"}
             </p>
           </div>
+          {!selectedMeeting ? (
+            <p className="mt-2 text-xs text-amber-800">
+              Everyone starts marked Here. Mark absences Away before saving.
+            </p>
+          ) : null}
 
           {loading ? (
             <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200" aria-label="Loading attendance" role="status">
@@ -829,7 +1145,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
             </Button>
           </form>
           <p className="mt-2 text-xs text-slate-500">
-            Choose an event. New people start counting on the day they are added.
+            Choose an event. Attendance starts at the first counted Monday they are marked Here.
           </p>
 
           <ul className="mt-5 divide-y divide-slate-200 border-y border-slate-200">
@@ -862,8 +1178,8 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                             </p>
                             <p className="mt-1 text-sm text-slate-500">
                               {stat.percent === null
-                                ? `Added ${formatShortDate(stat.member.eligibleFrom)}`
-                                : `${stat.present} of ${stat.eligibleMeetings}, since ${formatShortDate(stat.member.eligibleFrom)}`}
+                                ? "No counted meeting marked Here yet"
+                                : `${stat.present} of ${stat.eligibleMeetings}, since ${formatShortDate(stat.firstPresentDate!)}`}
                             </p>
                           </div>
                           <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
@@ -897,7 +1213,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                               )}
                             >
                               <span className="block">
-                                {stat.percent === null ? "New" : `${stat.percent}%`}
+                                {stat.percent === null ? "New" : formatPercent(stat.percent)}
                               </span>
                               {stat.percent === null ? null : (
                                 <span className="block text-xs font-medium">
@@ -905,6 +1221,22 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                                 </span>
                               )}
                             </span>
+                            <Button
+                              type="button"
+                              size="icon-sm"
+                              variant="ghost"
+                              aria-label={`Delete ${member.name}`}
+                              title={`Delete ${member.name}`}
+                              className="text-slate-500 hover:bg-red-50 hover:text-red-700"
+                              disabled={deletingMemberId === member.id || updatingMemberId === member.id}
+                              onClick={() => void deleteMember(member.id)}
+                            >
+                              {deletingMemberId === member.id ? (
+                                <RefreshCw className="animate-spin" aria-hidden="true" />
+                              ) : (
+                                <Trash2 aria-hidden="true" />
+                              )}
+                            </Button>
                           </div>
                         </div>
                       );
@@ -914,6 +1246,82 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
               ))
             )}
           </ul>
+        </section>
+
+        <section aria-labelledby="spreadsheet-heading" className="mt-12 border-t border-slate-200 pt-8">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h3 id="spreadsheet-heading" className="text-lg font-semibold tracking-tight">
+                All attendance data
+              </h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Every person and saved meeting, including meetings excluded from percentages.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={members.length === 0}
+              onClick={() => downloadAttendanceSpreadsheet(members, meetings, memberStatsById, attendanceLookup)}
+            >
+              <Download aria-hidden="true" />
+              Export CSV
+            </Button>
+          </div>
+          {members.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-500">Add someone to see the spreadsheet.</p>
+          ) : (
+            <div className="mt-4 max-h-[480px] overflow-auto rounded-lg border border-slate-200 bg-white">
+              <table className="min-w-full border-collapse text-left text-xs">
+                <caption className="sr-only">Complete attendance data by person and meeting</caption>
+                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
+                  <tr>
+                    <th scope="col" className="sticky left-0 z-20 min-w-36 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 font-semibold">Name</th>
+                    <th scope="col" className="min-w-28 border-b border-r border-slate-200 px-3 py-2 font-semibold">Event</th>
+                    <th scope="col" className="min-w-28 border-b border-r border-slate-200 px-3 py-2 font-semibold">First Here</th>
+                    <th scope="col" className="min-w-20 border-b border-r border-slate-200 px-3 py-2 font-semibold">Here / Counted</th>
+                    <th scope="col" className="min-w-20 border-b border-r border-slate-200 px-3 py-2 font-semibold">Percent</th>
+                    {meetings
+                      .slice()
+                      .sort((left, right) => left.meetingDate.localeCompare(right.meetingDate))
+                      .map((meeting) => (
+                        <th key={meeting.id} scope="col" className="min-w-24 border-b border-r border-slate-200 px-3 py-2 font-semibold">
+                          {formatShortDate(meeting.meetingDate)}
+                          <span className="mt-1 block font-normal text-slate-400">
+                            {meetingCountsTowardRate(meeting) ? "Counted" : "Not counted"}
+                          </span>
+                        </th>
+                      ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {members.map((member) => {
+                    const stat = memberStatsById.get(member.id);
+                    return (
+                      <tr key={member.id}>
+                        <th scope="row" className="sticky left-0 border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">{member.name}</th>
+                        <td className="border-r border-slate-100 px-3 py-2">{eventTypeLabel(member.eventType)}</td>
+                        <td className="border-r border-slate-100 px-3 py-2">{stat?.firstPresentDate ? formatShortDate(stat.firstPresentDate) : "Not started"}</td>
+                        <td className="border-r border-slate-100 px-3 py-2">{stat ? `${stat.present} / ${stat.eligibleMeetings}` : "—"}</td>
+                        <td className="border-r border-slate-100 px-3 py-2">{formatPercent(stat?.percent ?? null)}</td>
+                        {meetings
+                          .slice()
+                          .sort((left, right) => left.meetingDate.localeCompare(right.meetingDate))
+                          .map((meeting) => {
+                            const status = attendanceLookup.get(meeting.id)?.get(member.id);
+                            const value = status !== undefined
+                              ? status ? "Here" : "Away"
+                              : meeting.meetingDate < member.eligibleFrom ? "Not on roster" : "Not recorded";
+                            return <td key={meeting.id} className="border-r border-slate-100 px-3 py-2 text-slate-600">{value}</td>;
+                          })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         <section aria-labelledby="history-heading" className="mt-12 border-t border-slate-200 pt-8">
@@ -950,6 +1358,7 @@ export default function AttendanceApp({ initialDate }: { initialDate: string }) 
                     </span>
                     <span className="flex items-center gap-3 text-slate-500">
                       {sessionPresentCount(meeting)} of {total} here
+                      {!meetingCountsTowardRate(meeting) ? <span className="text-xs text-amber-700">Not counted</span> : null}
                       <Button
                         type="button"
                         size="sm"

@@ -11,6 +11,13 @@ function eastlakeDate() {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-export default function Home() {
-  return <AttendanceApp initialDate={eastlakeDate()} />;
+export default async function Home({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const view = params?.view === "student" ? "student" : "admin";
+
+  return <AttendanceApp initialDate={eastlakeDate()} initialView={view} />;
 }

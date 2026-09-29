@@ -22,7 +22,8 @@ function routeErrorMessage(error: unknown) {
     combined.includes("no such table") ||
     combined.includes("members") ||
     combined.includes("meetings") ||
-    combined.includes("event_type")
+    combined.includes("event_type") ||
+    combined.includes("counts_toward_attendance")
   ) {
     return "Attendance storage is not ready yet. Publish the latest app version, then reload this page.";
   }
@@ -94,9 +95,8 @@ export async function GET(request: Request) {
       db
         .select()
         .from(meetings)
-        .orderBy(desc(meetings.meetingDate), desc(meetings.id))
-        .limit(500),
-      db.select().from(attendance).orderBy(desc(attendance.updatedAt)).limit(50000),
+        .orderBy(desc(meetings.meetingDate), desc(meetings.id)),
+      db.select().from(attendance).orderBy(desc(attendance.updatedAt)),
     ]);
 
     return jsonResponse(request, {
@@ -116,6 +116,7 @@ export async function POST(request: Request) {
       name?: string;
       eventType?: string;
       memberId?: number;
+      countsTowardAttendance?: boolean;
       eligibleFrom?: string;
       meetingDate?: string;
       statuses?: Record<string, boolean>;
@@ -186,6 +187,24 @@ export async function POST(request: Request) {
       return jsonResponse(request, { member });
     }
 
+    if (payload.action === "delete_member") {
+      const memberId = Number(payload.memberId);
+      if (!Number.isInteger(memberId) || memberId < 1) {
+        return jsonResponse(request, { error: "Choose a valid person." }, { status: 400 });
+      }
+
+      const [member] = await db
+        .delete(members)
+        .where(eq(members.id, memberId))
+        .returning();
+
+      if (!member) {
+        return jsonResponse(request, { error: "That person is no longer on the roster." }, { status: 404 });
+      }
+
+      return jsonResponse(request, { deleted: true, member });
+    }
+
     if (payload.action === "save_meeting") {
       if (!isDate(payload.meetingDate)) {
         return jsonResponse(request,
@@ -200,6 +219,11 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
+
+      const countsTowardAttendance =
+        typeof payload.countsTowardAttendance === "boolean"
+          ? payload.countsTowardAttendance
+          : true;
 
       const statuses = payload.statuses ?? {};
       const currentMembers = await db.select().from(members);
@@ -217,12 +241,16 @@ export async function POST(request: Request) {
       if (meetingId) {
         await db
           .update(meetings)
-          .set({ updatedAt: now() })
+          .set({ updatedAt: now(), countsTowardAttendance })
           .where(eq(meetings.id, meetingId));
       } else {
         const [meeting] = await db
           .insert(meetings)
-          .values({ meetingDate: payload.meetingDate, updatedAt: now() })
+          .values({
+            meetingDate: payload.meetingDate,
+            countsTowardAttendance,
+            updatedAt: now(),
+          })
           .returning();
         meetingId = meeting.id;
       }

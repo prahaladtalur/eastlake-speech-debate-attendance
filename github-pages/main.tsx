@@ -22,6 +22,13 @@ function eastlakeDate() {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <AttendanceApp initialDate={eastlakeDate()} />
+    <AttendanceApp
+      initialDate={eastlakeDate()}
+      initialView={
+        new URLSearchParams(window.location.search).get("view") === "student"
+          ? "student"
+          : "admin"
+      }
+    />
   </StrictMode>,
 );

@@ -15,6 +15,13 @@
       "when": 1790036181000,
       "tag": "0001_add_member_event_type",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790642696000,
+      "tag": "0002_add_meeting_attendance_flag",
+      "breakpoints": true
     }
   ]
 }

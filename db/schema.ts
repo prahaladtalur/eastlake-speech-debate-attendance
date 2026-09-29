@@ -20,6 +20,11 @@ export const meetings = sqliteTable(
   {
     id: integer("id").primaryKey({ autoIncrement: true }),
     meetingDate: text("meeting_date").notNull(),
+    countsTowardAttendance: integer("counts_toward_attendance", {
+      mode: "boolean",
+    })
+      .notNull()
+      .default(true),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
