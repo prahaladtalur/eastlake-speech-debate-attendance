@@ -1,7 +1,7 @@
 import { asc, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { attendance, meetings, members } from "../../../db/schema";
-import { chunkAttendanceRows } from "../../../lib/attendance-batches.js";
+import { insertAttendanceInBatches } from "../../../lib/attendance-batches.js";
 import { attendanceRouteErrorMessage } from "../../../lib/attendance-errors.js";
 
 function today() {
@@ -51,14 +51,23 @@ async function ensureMeetingWithDefaults(
       updatedAt: timestamp,
     }));
 
-    for (const batch of chunkAttendanceRows(attendanceRows)) {
-      await db
-        .insert(attendance)
-        .values(batch)
-        .onConflictDoNothing({
-          target: [attendance.meetingId, attendance.memberId],
-        });
-    }
+    await insertAttendanceInBatches(
+      attendanceRows,
+      (batch) =>
+        db
+          .insert(attendance)
+          .values(batch)
+          .onConflictDoNothing({
+            target: [attendance.meetingId, attendance.memberId],
+          }),
+      (statements) =>
+        db.batch(
+          statements as [
+            (typeof statements)[number],
+            ...(typeof statements)[number][],
+          ],
+        ),
+    );
   }
 
   return meeting.id;
@@ -379,34 +388,35 @@ export async function POST(request: Request) {
         .where(eq(meetings.meetingDate, payload.meetingDate))
         .limit(1);
 
-      let meetingId = existingMeeting?.id;
-      if (meetingId) {
-        await db
-          .update(meetings)
-          .set({ updatedAt: now(), countsTowardAttendance })
-          .where(eq(meetings.id, meetingId));
-      } else {
-        const [meeting] = await db
-          .insert(meetings)
-          .values({
-            meetingDate: payload.meetingDate,
-            countsTowardAttendance,
-            updatedAt: now(),
-          })
-          .returning();
-        meetingId = meeting.id;
-      }
+      const meetingWrite = existingMeeting
+        ? db
+            .update(meetings)
+            .set({ updatedAt: now(), countsTowardAttendance })
+            .where(eq(meetings.id, existingMeeting.id))
+        : db
+            .insert(meetings)
+            .values({
+              meetingDate: payload.meetingDate,
+              countsTowardAttendance,
+              updatedAt: now(),
+            })
+            .onConflictDoUpdate({
+              target: meetings.meetingDate,
+              set: { countsTowardAttendance, updatedAt: now() },
+            });
+      const attendanceRows = eligibleMembers.map((member) => ({
+        meetingId:
+          existingMeeting?.id ??
+          sql<number>`(select ${meetings.id} from ${meetings} where ${meetings.meetingDate} = ${payload.meetingDate})`,
+        memberId: member.id,
+        present: statuses[String(member.id)] === true,
+        updatedAt: now(),
+      }));
 
-      if (eligibleMembers.length > 0) {
-        const attendanceRows = eligibleMembers.map((member) => ({
-          meetingId: meetingId!,
-          memberId: member.id,
-          present: statuses[String(member.id)] === true,
-          updatedAt: now(),
-        }));
-
-        for (const batch of chunkAttendanceRows(attendanceRows)) {
-          await db
+      await insertAttendanceInBatches(
+        attendanceRows,
+        (batch) =>
+          db
             .insert(attendance)
             .values(batch)
             .onConflictDoUpdate({
@@ -415,9 +425,25 @@ export async function POST(request: Request) {
                 present: sql`excluded.present`,
                 updatedAt: now(),
               },
-            });
-        }
-      }
+            }),
+        (statements) =>
+          db.batch(
+            statements as [
+              (typeof statements)[number],
+              ...(typeof statements)[number][],
+            ],
+          ),
+        [meetingWrite],
+      );
+
+      const meetingId = existingMeeting?.id ?? (
+        await db
+          .select({ id: meetings.id })
+          .from(meetings)
+          .where(eq(meetings.meetingDate, payload.meetingDate))
+          .limit(1)
+      )[0]?.id;
+      if (!meetingId) throw new Error("Could not save the meeting.");
 
       return jsonResponse(request, { meetingId });
     }
