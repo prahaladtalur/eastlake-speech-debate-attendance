@@ -30,6 +30,11 @@ const EVENT_TYPE_OPTIONS = [
   { value: "lincoln_douglas", label: "Lincoln–Douglas" },
 ] as const;
 
+const ATTENDANCE_EVENT_OPTIONS = [
+  ...EVENT_TYPE_OPTIONS,
+  { value: "unassigned", label: "Unassigned" },
+] as const;
+
 const EVENT_TYPE_ORDER = [
   ...EVENT_TYPE_OPTIONS.map((option) => option.value),
   "unassigned",
@@ -58,6 +63,10 @@ function eventTypeLabel(eventType: EventType) {
     EVENT_TYPE_OPTIONS.find((option) => option.value === eventType)?.label ??
     "Choose an event"
   );
+}
+
+function attendanceEventLabel(eventType: EventType) {
+  return eventType === "unassigned" ? "Unassigned" : eventTypeLabel(eventType);
 }
 
 function normalizeEventType(value: unknown): EventType {
@@ -165,10 +174,10 @@ function mondayDate(value: string) {
   return addDays(value, -daysSinceMonday);
 }
 
-function recentMondays(value: string, count: number) {
+function meetingMondays(value: string, pastWeeks: number, futureWeeks: number) {
   const currentMonday = mondayDate(value);
-  return Array.from({ length: count }, (_, index) =>
-    addDays(currentMonday, index * -7),
+  return Array.from({ length: pastWeeks + futureWeeks + 1 }, (_, index) =>
+    addDays(currentMonday, (index - pastWeeks) * 7),
   );
 }
 
@@ -262,9 +271,11 @@ function downloadAttendanceSpreadsheet(
 export default function AttendanceApp({
   initialDate,
   initialView = "admin",
+  initialEventType,
 }: {
   initialDate: string;
   initialView?: "admin" | "student";
+  initialEventType?: string;
 }) {
   const [members, setMembers] = useState<Member[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -284,6 +295,9 @@ export default function AttendanceApp({
   const [countsTowardAttendance, setCountsTowardAttendance] = useState(true);
   const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<AdminTab>("attendance");
+  const [activeAttendanceEvent, setActiveAttendanceEvent] = useState<EventType>(
+    () => isEventType(initialEventType) ? initialEventType : "speech",
+  );
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -295,6 +309,15 @@ export default function AttendanceApp({
 
     const url = new URL(window.location.href);
     url.searchParams.set("meeting", value);
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
+
+  const selectAttendanceEvent = useCallback((value: string) => {
+    if (!isEventType(value)) return;
+    setActiveAttendanceEvent(value);
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("event", value);
     window.history.replaceState(window.history.state, "", url);
   }, []);
 
@@ -521,7 +544,7 @@ export default function AttendanceApp({
 
   const meetingOptions = useMemo(() => {
     const dates = new Set([
-      ...recentMondays(initialDate, 26),
+      ...meetingMondays(initialDate, 25, 52),
       ...mondayMeetings.map((meeting) => meeting.meetingDate),
     ]);
     return [...dates].sort((left, right) => right.localeCompare(left));
@@ -585,9 +608,20 @@ export default function AttendanceApp({
     });
   }, [attendanceLookup, members, mondayMeetings]);
 
-  const eligibleMemberGroups = useMemo(
-    () => groupMembersByEventType(eligibleMembers),
-    [eligibleMembers],
+  const attendanceEventTabs = useMemo(
+    () =>
+      ATTENDANCE_EVENT_OPTIONS.filter(
+        (option) =>
+          option.value !== "unassigned" ||
+          members.some((member) => member.eventType === "unassigned") ||
+          activeAttendanceEvent === "unassigned",
+      ),
+    [activeAttendanceEvent, members],
+  );
+
+  const activeEventMembers = useMemo(
+    () => eligibleMembers.filter((member) => member.eventType === activeAttendanceEvent),
+    [activeAttendanceEvent, eligibleMembers],
   );
 
   const rosterGroups = useMemo(
@@ -600,7 +634,7 @@ export default function AttendanceApp({
     [memberStats],
   );
 
-  const presentCount = eligibleMembers.filter(
+  const presentCount = activeEventMembers.filter(
     (member) => statuses[member.id] === true,
   ).length;
 
@@ -1076,102 +1110,134 @@ export default function AttendanceApp({
                 </div>
               ) : null}
 
-              <div className="mt-7 flex items-center justify-between gap-4">
-                <p className="text-sm font-semibold text-slate-700">
-                  {presentCount} of {eligibleMembers.length} here
-                </p>
-                <p className="text-sm text-slate-500">
-                  {selectedMeeting ? "Editing saved Monday" : "New Monday"}
-                </p>
-              </div>
               {!selectedMeeting ? (
                 <p className="mt-2 text-xs text-amber-800">
                   Everyone starts marked Here. Mark absences Away; changes save automatically.
                 </p>
               ) : null}
 
-              {loading ? (
-                <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200" aria-label="Loading attendance" role="status">
-                  {[1, 2, 3].map((item) => (
-                    <div key={item} className="h-16 animate-pulse bg-slate-100/70" />
+              <Tabs
+                value={activeAttendanceEvent}
+                onValueChange={selectAttendanceEvent}
+                className="mt-4"
+              >
+                <TabsList
+                  variant="line"
+                  aria-label="Debate type"
+                  className={cn(
+                    "grid h-auto w-full grid-cols-2 gap-x-1 gap-y-1 border-b border-slate-200 px-0 group-data-[orientation=horizontal]/tabs:h-auto sm:grid-cols-4",
+                    attendanceEventTabs.length > 4 && "sm:grid-cols-5",
+                  )}
+                >
+                  {attendanceEventTabs.map((option) => (
+                    <TabsTrigger
+                      key={option.value}
+                      value={option.value}
+                      aria-label={option.label}
+                      className="h-auto min-h-10 min-w-0 whitespace-normal px-1.5 py-2 text-xs sm:text-sm"
+                    >
+                      <span className="min-w-0">{option.label}</span>
+                      <span
+                        className="rounded-full px-1 text-[10px] text-slate-500"
+                        aria-hidden="true"
+                      >
+                        {eligibleMembers.filter((member) => member.eventType === option.value).length}
+                      </span>
+                    </TabsTrigger>
                   ))}
+                </TabsList>
+
+                <div className="mt-5 flex flex-col items-start justify-between gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+                  <p className="text-sm font-semibold text-slate-700">
+                    {attendanceEventLabel(activeAttendanceEvent)} · {presentCount} of {activeEventMembers.length} here
+                  </p>
+                  <p className="text-sm text-slate-500">
+                    {selectedMeeting ? "Editing saved Monday" : "New Monday"}
+                  </p>
                 </div>
-              ) : eligibleMembers.length === 0 ? (
-                <div className="mt-3 border-y border-slate-200 py-10 text-sm text-slate-500">
-                  Add someone below to start taking attendance.
-                </div>
-              ) : (
-                <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
-                  {eligibleMemberGroups.map((group) => (
-                    <div key={group.eventType}>
-                      <div className="flex items-center justify-between gap-4 bg-slate-50/80 px-3 py-2.5">
-                        <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                          {eventTypeLabel(group.eventType)}
-                        </h3>
-                        <span className="text-xs text-slate-400">
-                          {group.members.length}
-                        </span>
-                      </div>
-                      <div className="divide-y divide-slate-200">
-                        {group.members.map((member) => {
-                          const present = statuses[member.id] === true;
-                          return (
-                            <div key={member.id} className="flex items-center justify-between gap-4 px-3 py-4">
-                              <div className="flex min-w-0 items-center gap-2">
-                                <span
-                                  className={cn(
-                                    "size-2 shrink-0 rounded-full",
-                                    present ? "bg-emerald-500" : "bg-slate-300",
-                                  )}
-                                  aria-hidden="true"
-                                />
-                                <div className="min-w-0">
-                                  <p className="truncate font-medium text-slate-900">{member.name}</p>
-                                  <p className="mt-1 text-sm text-slate-500">
-                                    {present ? "Here" : "Away"}
-                                  </p>
+
+                {attendanceEventTabs.map((option) => {
+                  const eventMembers = eligibleMembers.filter(
+                    (member) => member.eventType === option.value,
+                  );
+                  return (
+                    <TabsContent
+                      key={option.value}
+                      value={option.value}
+                      className="mt-3 min-w-0"
+                    >
+                      {loading ? (
+                        <div aria-label="Loading attendance" role="status" className="divide-y divide-slate-200 border-y border-slate-200">
+                          {[1, 2, 3].map((item) => (
+                            <div key={item} className="h-16 animate-pulse bg-slate-100/70" />
+                          ))}
+                        </div>
+                      ) : eventMembers.length === 0 ? (
+                        <div className="border-y border-slate-200 py-10 text-sm text-slate-500">
+                          No {option.label} members yet. Add or assign people in Roster.
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-200 border-y border-slate-200">
+                          {eventMembers.map((member) => {
+                            const present = statuses[member.id] === true;
+                            return (
+                              <div key={member.id} className="flex items-center justify-between gap-4 px-3 py-4">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span
+                                    className={cn(
+                                      "size-2 shrink-0 rounded-full",
+                                      present ? "bg-emerald-500" : "bg-slate-300",
+                                    )}
+                                    aria-hidden="true"
+                                  />
+                                  <div className="min-w-0">
+                                    <p className="truncate font-medium text-slate-900">{member.name}</p>
+                                    <p className="mt-1 text-sm text-slate-500">
+                                      {present ? "Here" : "Away"}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div
+                                  className="flex shrink-0 rounded-md border border-slate-200 bg-white p-0.5"
+                                  aria-label={`Attendance for ${member.name}`}
+                                >
+                                  <Button
+                                    type="button"
+                                    disabled={saving || loading}
+                                    size="sm"
+                                    aria-pressed={present}
+                                    variant={present ? "default" : "ghost"}
+                                    className={cn(
+                                      "h-9 min-w-16 px-3",
+                                      present
+                                        ? "bg-[#08182b] text-white hover:bg-[#102844]"
+                                        : "text-slate-600",
+                                    )}
+                                    onClick={() => setMemberStatus(member.id, true)}
+                                  >
+                                    Here
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    disabled={saving || loading}
+                                    size="sm"
+                                    aria-pressed={!present}
+                                    variant={!present ? "secondary" : "ghost"}
+                                    className="h-9 min-w-16 px-3 text-slate-600"
+                                    onClick={() => setMemberStatus(member.id, false)}
+                                  >
+                                    Away
+                                  </Button>
                                 </div>
                               </div>
-                              <div
-                                className="flex shrink-0 rounded-md border border-slate-200 bg-white p-0.5"
-                                aria-label={`Attendance for ${member.name}`}
-                              >
-                                <Button
-                                  type="button"
-                                  disabled={saving || loading}
-                                  size="sm"
-                                  aria-pressed={present}
-                                  variant={present ? "default" : "ghost"}
-                                  className={cn(
-                                    "h-9 min-w-16 px-3",
-                                    present
-                                      ? "bg-[#08182b] text-white hover:bg-[#102844]"
-                                      : "text-slate-600",
-                                  )}
-                                  onClick={() => setMemberStatus(member.id, true)}
-                                >
-                                  Here
-                                </Button>
-                                <Button
-                                  type="button"
-                                  disabled={saving || loading}
-                                  size="sm"
-                                  aria-pressed={!present}
-                                  variant={!present ? "secondary" : "ghost"}
-                                  className="h-9 min-w-16 px-3 text-slate-600"
-                                  onClick={() => setMemberStatus(member.id, false)}
-                                >
-                                  Away
-                                </Button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                            );
+                          })}
+                        </div>
+                      )}
+                    </TabsContent>
+                  );
+                })}
+              </Tabs>
 
               {!selectedMeeting ? (
                 <Button

@@ -290,7 +290,34 @@ def main():
 
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
             expect(page.get_by_role("heading", name="Who's here?")).to_be_visible()
-            expect(page.get_by_role("tab")).to_have_count(4)
+            screenshot_dir = os.environ.get("ATTENDANCE_SCREENSHOT_DIR")
+            if screenshot_dir:
+                screenshot_path = Path(screenshot_dir)
+                screenshot_path.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(screenshot_path / "desktop.png"), full_page=True)
+                page.set_viewport_size({"width": 390, "height": 844})
+                page.screenshot(path=str(screenshot_path / "mobile.png"), full_page=True)
+                page.set_viewport_size({"width": 1280, "height": 900})
+            expect(page.get_by_role("tablist", name="Attendance sections").get_by_role("tab")).to_have_count(4)
+            debate_tabs = page.get_by_role("tablist", name="Debate type")
+            expect(debate_tabs.get_by_role("tab")).to_have_count(4)
+            for event_name in ("Speech", "Policy", "Public Forum", "Lincoln–Douglas"):
+                expect(debate_tabs.get_by_role("tab", name=event_name)).to_be_visible()
+            available_dates = page.get_by_label("Monday meeting").locator("option").evaluate_all(
+                "options => options.map(option => option.value)"
+            )
+            one_year_out = (
+                datetime.fromisoformat(fixture["current_monday"]) + timedelta(weeks=52)
+            ).date().isoformat()
+            assert one_year_out in available_dates, "The Monday picker should include the next year"
+            page.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Policy").click()
+            expect(page.locator('[aria-label="Attendance for Bob"]')).to_be_visible()
+            expect(page.locator('[aria-label="Attendance for Alice"]')).to_have_count(0)
+            assert "event=policy" in page.url
+            page.reload(wait_until="networkidle")
+            expect(page.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Policy")).to_have_attribute("aria-selected", "true")
+            expect(page.locator('[aria-label="Attendance for Bob"]')).to_be_visible()
+            page.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Speech").click()
             page.get_by_role("tab", name="Attendance").focus()
             page.keyboard.press("ArrowRight")
             expect(page.get_by_role("tab", name="Roster")).to_have_attribute("aria-selected", "true")
@@ -307,10 +334,12 @@ def main():
             second_editor.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
             page.locator('[aria-label="Attendance for Alice"]').get_by_role("button", name="Away").click()
             expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            second_editor.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Policy").click()
             second_editor.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Away").click()
             expect(second_editor.get_by_text("Attendance saved", exact=False)).to_be_visible()
             page.reload(wait_until="networkidle")
             expect(page.locator('[aria-label="Attendance for Alice"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
+            page.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Policy").click()
             expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
             second_editor.close()
 
@@ -318,6 +347,7 @@ def main():
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
             expect(page.get_by_role("heading", name="Who's here?")).to_be_visible()
 
+            page.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Policy").click()
             page.get_by_label("Monday meeting").select_option(fixture["saved_monday"])
             expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
             page.get_by_label("Monday meeting").select_option(fixture["current_monday"])
@@ -346,9 +376,11 @@ def main():
             expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
             page.get_by_label("Monday meeting").select_option(fixture["current_monday"])
 
-            expect(page.locator('[aria-label="Attendance for Alice"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
             expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
+            page.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Speech").click()
+            expect(page.locator('[aria-label="Attendance for Alice"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
             page.locator('[aria-label="Attendance for Alice"]').get_by_role("button", name="Away").click()
+            page.get_by_role("tablist", name="Debate type").get_by_role("tab", name="Policy").click()
             page.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Away").click()
             page.get_by_label("Count this meeting toward attendance").uncheck()
             expect(page.get_by_text("Attendance settings saved", exact=False)).to_be_visible()
@@ -402,11 +434,15 @@ def main():
 
             fixture = make_fixture()
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
+            future_monday = (
+                datetime.fromisoformat(fixture["current_monday"]) + timedelta(weeks=8)
+            ).date().isoformat()
+            page.get_by_label("Monday meeting").select_option(future_monday)
             page.get_by_role("button", name="Record everyone Here").click()
             expect(page.get_by_text("Attendance recorded", exact=False)).to_be_visible()
             current_meeting = next(
                 item for item in fixture["meetings"]
-                if item["meetingDate"] == fixture["current_monday"]
+                if item["meetingDate"] == future_monday
             )
             assert all(
                 row["present"] is True
@@ -414,6 +450,7 @@ def main():
                 if row["meetingId"] == current_meeting["id"]
             )
             page.reload(wait_until="networkidle")
+            assert page.get_by_label("Monday meeting").input_value() == future_monday
             expect(page.locator('[aria-label="Attendance for Alice"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
 
             fixture = make_percentage_fixture("Near Threshold", "public_forum", range(60, 9, -1), 38)
@@ -428,7 +465,7 @@ def main():
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("75%", exact=True)).to_be_visible()
             expect(page.get_by_text("Passing", exact=True)).to_be_visible()
 
-            print("PASS: autosave and refresh, meeting-date persistence, keyboard tabs, attendance rules, spreadsheet export, roster edits, and read-only student UI")
+            print("PASS: debate tabs, future Mondays, autosave and refresh, attendance rules, spreadsheet export, roster edits, and read-only student UI")
             browser.close()
     finally:
         server.shutdown()

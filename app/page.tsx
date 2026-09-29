@@ -20,6 +20,15 @@ export default async function Home({
   const params = await searchParams;
   const view = params?.view === "student" ? "student" : "admin";
   const initialDate = getRequestedMondayDate(params?.meeting, eastlakeDate());
+  const initialEventType = Array.isArray(params?.event)
+    ? params.event[0]
+    : params?.event;
 
-  return <AttendanceApp initialDate={initialDate} initialView={view} />;
+  return (
+    <AttendanceApp
+      initialDate={initialDate}
+      initialView={view}
+      initialEventType={initialEventType}
+    />
+  );
 }

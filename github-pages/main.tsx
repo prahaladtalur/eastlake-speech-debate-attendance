@@ -21,6 +21,8 @@ function eastlakeDate() {
 (window as Window & { __EASTLAKE_API_BASE__?: string }).__EASTLAKE_API_BASE__ =
   API_BASE_URL;
 
+const requestedParams = new URLSearchParams(window.location.search);
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AttendanceApp
@@ -28,11 +30,8 @@ createRoot(document.getElementById("root")!).render(
         new URLSearchParams(window.location.search).get("meeting") ?? undefined,
         eastlakeDate(),
       )}
-      initialView={
-        new URLSearchParams(window.location.search).get("view") === "student"
-          ? "student"
-          : "admin"
-      }
+      initialView={requestedParams.get("view") === "student" ? "student" : "admin"}
+      initialEventType={requestedParams.get("event") ?? undefined}
     />
   </StrictMode>,
 );
