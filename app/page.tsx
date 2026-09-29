@@ -1,4 +1,5 @@
 import AttendanceApp from "./attendance-app";
+import { getRequestedMondayDate } from "@/lib/attendance-date";
 
 function eastlakeDate() {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -18,6 +19,7 @@ export default async function Home({
 }) {
   const params = await searchParams;
   const view = params?.view === "student" ? "student" : "admin";
+  const initialDate = getRequestedMondayDate(params?.meeting, eastlakeDate());
 
-  return <AttendanceApp initialDate={eastlakeDate()} initialView={view} />;
+  return <AttendanceApp initialDate={initialDate} initialView={view} />;
 }

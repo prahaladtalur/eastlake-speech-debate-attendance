@@ -11,11 +11,14 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { isMondayDate } from "@/lib/attendance-date";
 import { cn } from "@/lib/utils";
 
 const TARGET_PERCENT = 75;
@@ -31,6 +34,15 @@ const EVENT_TYPE_ORDER = [
   ...EVENT_TYPE_OPTIONS.map((option) => option.value),
   "unassigned",
 ] as const;
+
+const ADMIN_TABS = [
+  { value: "attendance", label: "Attendance" },
+  { value: "roster", label: "Roster" },
+  { value: "spreadsheet", label: "Spreadsheet" },
+  { value: "history", label: "History" },
+] as const;
+
+type AdminTab = (typeof ADMIN_TABS)[number]["value"];
 
 type EventType = (typeof EVENT_TYPE_ORDER)[number];
 
@@ -153,10 +165,6 @@ function mondayDate(value: string) {
   return addDays(value, -daysSinceMonday);
 }
 
-function isMondayDate(value: string) {
-  return new Date(`${value}T12:00:00`).getDay() === 1;
-}
-
 function recentMondays(value: string, count: number) {
   const currentMonday = mondayDate(value);
   return Array.from({ length: count }, (_, index) =>
@@ -268,13 +276,24 @@ export default function AttendanceApp({
     useState<EventType>("speech");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const attendanceSaveInFlight = useRef(false);
   const [adding, setAdding] = useState(false);
   const [updatingMemberId, setUpdatingMemberId] = useState<number | null>(null);
   const [deletingMemberId, setDeletingMemberId] = useState<number | null>(null);
   const [countsTowardAttendance, setCountsTowardAttendance] = useState(true);
   const [selectedStudentId, setSelectedStudentId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<AdminTab>("attendance");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+
+  const selectMeetingDate = useCallback((value: string) => {
+    if (!isMondayDate(value)) return;
+    setMeetingDate(value);
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("meeting", value);
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -457,7 +476,7 @@ export default function AttendanceApp({
             if (!response.ok) {
               throw new Error(payload.error ?? "Could not save attendance.");
             }
-            setMeetingDate(date);
+            selectMeetingDate(date);
             await loadData();
             setNotice(`Attendance saved for ${formatDate(date)}.`);
             return {
@@ -473,7 +492,7 @@ export default function AttendanceApp({
 
     void registerTools().catch(() => undefined);
     return () => lifecycle.abort();
-  }, [initialView, loadData]);
+  }, [initialView, loadData, selectMeetingDate]);
 
   const attendanceLookup = useMemo(() => {
     const lookup = new Map<number, Map<number, boolean>>();
@@ -701,12 +720,21 @@ export default function AttendanceApp({
     }
   }
 
-  async function saveMeeting() {
+  async function saveMeeting(
+    statusesToSave = statuses,
+    countsForMeeting = countsTowardAttendance,
+    rollback?: {
+      statuses: Record<number, boolean>;
+      countsTowardAttendance: boolean;
+    },
+  ) {
+    if (attendanceSaveInFlight.current) return;
     if (eligibleMembers.length === 0) {
       setError("Add at least one person before saving attendance.");
       return;
     }
 
+    attendanceSaveInFlight.current = true;
     setSaving(true);
     setError("");
     setNotice("");
@@ -717,11 +745,11 @@ export default function AttendanceApp({
         body: JSON.stringify({
           action: "save_meeting",
           meetingDate,
-          countsTowardAttendance,
+          countsTowardAttendance: countsForMeeting,
           statuses: Object.fromEntries(
             eligibleMembers.map((member) => [
               String(member.id),
-              statuses[member.id] === true,
+              statusesToSave[member.id] === true,
             ]),
           ),
         }),
@@ -734,19 +762,42 @@ export default function AttendanceApp({
       await loadData();
       setNotice(`Attendance saved for ${formatDate(meetingDate)}.`);
     } catch (saveError) {
+      if (rollback) {
+        setStatuses(rollback.statuses);
+        setCountsTowardAttendance(rollback.countsTowardAttendance);
+      }
       setError(
         saveError instanceof Error
           ? saveError.message
           : "Could not save attendance.",
       );
     } finally {
+      attendanceSaveInFlight.current = false;
       setSaving(false);
     }
   }
 
   function setMemberStatus(memberId: number, present: boolean) {
-    setStatuses((current) => ({ ...current, [memberId]: present }));
+    if (attendanceSaveInFlight.current) return;
+    const previousStatuses = statuses;
+    const nextStatuses = { ...statuses, [memberId]: present };
+    setStatuses(nextStatuses);
     setNotice("");
+    void saveMeeting(nextStatuses, countsTowardAttendance, {
+      statuses: previousStatuses,
+      countsTowardAttendance,
+    });
+  }
+
+  function setMeetingCountsTowardAttendance(nextValue: boolean) {
+    if (attendanceSaveInFlight.current) return;
+    const previousValue = countsTowardAttendance;
+    setCountsTowardAttendance(nextValue);
+    setNotice("");
+    void saveMeeting(statuses, nextValue, {
+      statuses,
+      countsTowardAttendance: previousValue,
+    });
   }
 
   function sessionPresentCount(meeting: Meeting) {
@@ -925,456 +976,511 @@ export default function AttendanceApp({
       </header>
 
       <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
-        <section aria-labelledby="attendance-heading">
-          <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <h2 id="attendance-heading" className="text-2xl font-semibold tracking-tight">
-                Who&apos;s here?
-              </h2>
-              <p className="mt-2 text-sm text-slate-500">
-                Mark each person, then save. {TARGET_PERCENT}%+ is passing.
-              </p>
-            </div>
-            <div className="grid gap-3">
-              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
-                <span>Monday meeting</span>
-                <select
-                  aria-label="Monday meeting"
-                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 sm:w-[260px]"
-                  value={meetingDate}
-                  onChange={(event) => setMeetingDate(event.target.value)}
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => setActiveTab(value as AdminTab)}
+          className="mt-1"
+        >
+          <TabsList
+            variant="line"
+            aria-label="Attendance sections"
+            className="grid h-11 w-full grid-cols-4 gap-1 border-b border-slate-200 px-0"
+          >
+            {ADMIN_TABS.map((tab) => (
+              <TabsTrigger
+                key={tab.value}
+                value={tab.value}
+                aria-label={tab.label}
+                className="min-w-0 px-1.5 text-xs sm:px-2 sm:text-sm"
+              >
+                {tab.value === "spreadsheet" ? (
+                  <>
+                    <span className="sm:hidden">Data</span>
+                    <span className="hidden sm:inline">Spreadsheet</span>
+                  </>
+                ) : (
+                  tab.label
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+
+          <TabsContent value="attendance" className="mt-6 min-w-0">
+            <section aria-labelledby="attendance-heading">
+              <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h2 id="attendance-heading" className="text-2xl font-semibold tracking-tight">
+                    Who&apos;s here?
+                  </h2>
+                  <p className="mt-2 text-sm text-slate-500">
+                    Mark each person; changes save automatically. {TARGET_PERCENT}%+ is passing.
+                  </p>
+                </div>
+                <div className="grid gap-3">
+                  <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                    <span>Monday meeting</span>
+                    <select
+                      aria-label="Monday meeting"
+                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 sm:w-[260px]"
+                      value={meetingDate}
+                      onChange={(event) => selectMeetingDate(event.target.value)}
+                    >
+                      {meetingOptions.map((date) => (
+                        <option key={date} value={date}>
+                          {formatMeetingDate(date)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={countsTowardAttendance}
+                      disabled={saving || loading}
+                      onChange={(event) => setMeetingCountsTowardAttendance(event.target.checked)}
+                      className="mt-0.5 size-4 accent-[#e8652b]"
+                    />
+                    <span>Count this meeting toward attendance</span>
+                  </label>
+                </div>
+              </div>
+
+              {notice ? (
+                <div
+                  className="mt-4 flex items-center gap-2 text-sm text-emerald-700"
+                  role="status"
+                  aria-live="polite"
                 >
-                  {meetingOptions.map((date) => (
-                    <option key={date} value={date}>
-                      {formatMeetingDate(date)}
+                  <Check className="size-4" aria-hidden="true" />
+                  {notice}
+                </div>
+              ) : null}
+              {error ? (
+                <div className="mt-4 flex items-start gap-2 text-sm leading-6 text-red-700" role="alert">
+                  <CircleHelp className="mt-1 size-4 shrink-0" aria-hidden="true" />
+                  <span>{error}</span>
+                </div>
+              ) : null}
+
+              <div className="mt-7 flex items-center justify-between gap-4">
+                <p className="text-sm font-semibold text-slate-700">
+                  {presentCount} of {eligibleMembers.length} here
+                </p>
+                <p className="text-sm text-slate-500">
+                  {selectedMeeting ? "Editing saved Monday" : "New Monday"}
+                </p>
+              </div>
+              {!selectedMeeting ? (
+                <p className="mt-2 text-xs text-amber-800">
+                  Everyone starts marked Here. Mark absences Away; changes save automatically.
+                </p>
+              ) : null}
+
+              {loading ? (
+                <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200" aria-label="Loading attendance" role="status">
+                  {[1, 2, 3].map((item) => (
+                    <div key={item} className="h-16 animate-pulse bg-slate-100/70" />
+                  ))}
+                </div>
+              ) : eligibleMembers.length === 0 ? (
+                <div className="mt-3 border-y border-slate-200 py-10 text-sm text-slate-500">
+                  Add someone below to start taking attendance.
+                </div>
+              ) : (
+                <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
+                  {eligibleMemberGroups.map((group) => (
+                    <div key={group.eventType}>
+                      <div className="flex items-center justify-between gap-4 bg-slate-50/80 px-3 py-2.5">
+                        <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                          {eventTypeLabel(group.eventType)}
+                        </h3>
+                        <span className="text-xs text-slate-400">
+                          {group.members.length}
+                        </span>
+                      </div>
+                      <div className="divide-y divide-slate-200">
+                        {group.members.map((member) => {
+                          const present = statuses[member.id] === true;
+                          return (
+                            <div key={member.id} className="flex items-center justify-between gap-4 px-3 py-4">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span
+                                  className={cn(
+                                    "size-2 shrink-0 rounded-full",
+                                    present ? "bg-emerald-500" : "bg-slate-300",
+                                  )}
+                                  aria-hidden="true"
+                                />
+                                <div className="min-w-0">
+                                  <p className="truncate font-medium text-slate-900">{member.name}</p>
+                                  <p className="mt-1 text-sm text-slate-500">
+                                    {present ? "Here" : "Away"}
+                                  </p>
+                                </div>
+                              </div>
+                              <div
+                                className="flex shrink-0 rounded-md border border-slate-200 bg-white p-0.5"
+                                aria-label={`Attendance for ${member.name}`}
+                              >
+                                <Button
+                                  type="button"
+                                  disabled={saving || loading}
+                                  size="sm"
+                                  aria-pressed={present}
+                                  variant={present ? "default" : "ghost"}
+                                  className={cn(
+                                    "h-9 min-w-16 px-3",
+                                    present
+                                      ? "bg-[#08182b] text-white hover:bg-[#102844]"
+                                      : "text-slate-600",
+                                  )}
+                                  onClick={() => setMemberStatus(member.id, true)}
+                                >
+                                  Here
+                                </Button>
+                                <Button
+                                  type="button"
+                                  disabled={saving || loading}
+                                  size="sm"
+                                  aria-pressed={!present}
+                                  variant={!present ? "secondary" : "ghost"}
+                                  className="h-9 min-w-16 px-3 text-slate-600"
+                                  onClick={() => setMemberStatus(member.id, false)}
+                                >
+                                  Away
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <Button
+                type="button"
+                size="lg"
+                className="mt-6 h-11 w-full bg-[#e8652b] text-white hover:bg-[#d95822]"
+                disabled={saving || loading || eligibleMembers.length === 0}
+                onClick={() => void saveMeeting()}
+              >
+                {saving ? <RefreshCw className="animate-spin" aria-hidden="true" /> : null}
+                {saving ? "Saving…" : "Save attendance"}
+              </Button>
+            </section>
+
+          </TabsContent>
+
+          <TabsContent value="roster" className="mt-6 min-w-0">
+            <section aria-labelledby="roster-heading">
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <h3 id="roster-heading" className="text-lg font-semibold tracking-tight">
+                    Roster
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-500">Add anyone who should be counted.</p>
+                </div>
+                <span className="text-sm text-slate-500">
+                  {members.length} {members.length === 1 ? "person" : "people"}
+                </span>
+              </div>
+
+              <form
+                className="mt-5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto]"
+                onSubmit={addMember}
+              >
+                <label className="sr-only" htmlFor="member-name">
+                  Add a person
+                </label>
+                <Input
+                  id="member-name"
+                  className="bg-white"
+                  placeholder="Name"
+                  value={memberName}
+                  onChange={(event) => setMemberName(event.target.value)}
+                  disabled={adding}
+                />
+                <label className="sr-only" htmlFor="member-event-type">
+                  Event type
+                </label>
+                <select
+                  id="member-event-type"
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  value={newMemberEventType}
+                  onChange={(event) =>
+                    setNewMemberEventType(normalizeEventType(event.target.value))
+                  }
+                  disabled={adding}
+                >
+                  {EVENT_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
                     </option>
                   ))}
                 </select>
-              </label>
-              <label className="flex items-start gap-2 text-sm text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={countsTowardAttendance}
-                  onChange={(event) => setCountsTowardAttendance(event.target.checked)}
-                  className="mt-0.5 size-4 accent-[#e8652b]"
-                />
-                <span>Count this meeting toward attendance</span>
-              </label>
-            </div>
-          </div>
-
-          {notice ? (
-            <div
-              className="mt-4 flex items-center gap-2 text-sm text-emerald-700"
-              role="status"
-              aria-live="polite"
-            >
-              <Check className="size-4" aria-hidden="true" />
-              {notice}
-            </div>
-          ) : null}
-          {error ? (
-            <div className="mt-4 flex items-start gap-2 text-sm leading-6 text-red-700" role="alert">
-              <CircleHelp className="mt-1 size-4 shrink-0" aria-hidden="true" />
-              <span>{error}</span>
-            </div>
-          ) : null}
-
-          <div className="mt-7 flex items-center justify-between gap-4">
-            <p className="text-sm font-semibold text-slate-700">
-              {presentCount} of {eligibleMembers.length} here
-            </p>
-            <p className="text-sm text-slate-500">
-              {selectedMeeting ? "Editing saved Monday" : "New Monday"}
-            </p>
-          </div>
-          {!selectedMeeting ? (
-            <p className="mt-2 text-xs text-amber-800">
-              Everyone starts marked Here. Mark absences Away before saving.
-            </p>
-          ) : null}
-
-          {loading ? (
-            <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200" aria-label="Loading attendance" role="status">
-              {[1, 2, 3].map((item) => (
-                <div key={item} className="h-16 animate-pulse bg-slate-100/70" />
-              ))}
-            </div>
-          ) : eligibleMembers.length === 0 ? (
-            <div className="mt-3 border-y border-slate-200 py-10 text-sm text-slate-500">
-              Add someone below to start taking attendance.
-            </div>
-          ) : (
-            <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
-              {eligibleMemberGroups.map((group) => (
-                <div key={group.eventType}>
-                  <div className="flex items-center justify-between gap-4 bg-slate-50/80 px-3 py-2.5">
-                    <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                      {eventTypeLabel(group.eventType)}
-                    </h3>
-                    <span className="text-xs text-slate-400">
-                      {group.members.length}
-                    </span>
-                  </div>
-                  <div className="divide-y divide-slate-200">
-                    {group.members.map((member) => {
-                      const present = statuses[member.id] === true;
-                      return (
-                        <div key={member.id} className="flex items-center justify-between gap-4 px-3 py-4">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className={cn(
-                                "size-2 shrink-0 rounded-full",
-                                present ? "bg-emerald-500" : "bg-slate-300",
-                              )}
-                              aria-hidden="true"
-                            />
-                            <div className="min-w-0">
-                              <p className="truncate font-medium text-slate-900">{member.name}</p>
-                              <p className="mt-1 text-sm text-slate-500">
-                                {present ? "Here" : "Away"}
-                              </p>
-                            </div>
-                          </div>
-                          <div
-                            className="flex shrink-0 rounded-md border border-slate-200 bg-white p-0.5"
-                            aria-label={`Attendance for ${member.name}`}
-                          >
-                            <Button
-                              type="button"
-                              size="sm"
-                              aria-pressed={present}
-                              variant={present ? "default" : "ghost"}
-                              className={cn(
-                                "h-9 min-w-16 px-3",
-                                present
-                                  ? "bg-[#08182b] text-white hover:bg-[#102844]"
-                                  : "text-slate-600",
-                              )}
-                              onClick={() => setMemberStatus(member.id, true)}
-                            >
-                              Here
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              aria-pressed={!present}
-                              variant={!present ? "secondary" : "ghost"}
-                              className="h-9 min-w-16 px-3 text-slate-600"
-                              onClick={() => setMemberStatus(member.id, false)}
-                            >
-                              Away
-                            </Button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <Button
-            type="button"
-            size="lg"
-            className="mt-6 h-11 w-full bg-[#e8652b] text-white hover:bg-[#d95822]"
-            disabled={saving || loading || eligibleMembers.length === 0}
-            onClick={saveMeeting}
-          >
-            {saving ? <RefreshCw className="animate-spin" aria-hidden="true" /> : null}
-            {saving ? "Saving…" : "Save attendance"}
-          </Button>
-        </section>
-
-        <section aria-labelledby="roster-heading" className="mt-12 border-t border-slate-200 pt-8">
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              <h3 id="roster-heading" className="text-lg font-semibold tracking-tight">
-                Roster
-              </h3>
-              <p className="mt-1 text-sm text-slate-500">Add anyone who should be counted.</p>
-            </div>
-            <span className="text-sm text-slate-500">
-              {members.length} {members.length === 1 ? "person" : "people"}
-            </span>
-          </div>
-
-          <form
-            className="mt-5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px_auto]"
-            onSubmit={addMember}
-          >
-            <label className="sr-only" htmlFor="member-name">
-              Add a person
-            </label>
-            <Input
-              id="member-name"
-              className="bg-white"
-              placeholder="Name"
-              value={memberName}
-              onChange={(event) => setMemberName(event.target.value)}
-              disabled={adding}
-            />
-            <label className="sr-only" htmlFor="member-event-type">
-              Event type
-            </label>
-            <select
-              id="member-event-type"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
-              value={newMemberEventType}
-              onChange={(event) =>
-                setNewMemberEventType(normalizeEventType(event.target.value))
-              }
-              disabled={adding}
-            >
-              {EVENT_TYPE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <Button
-              type="submit"
-              size="default"
-              className="bg-[#08182b] text-white hover:bg-[#102844] sm:size-icon"
-              aria-label="Add person"
-              disabled={adding}
-            >
-              <Plus aria-hidden="true" />
-              <span className="sm:hidden">Add person</span>
-            </Button>
-          </form>
-          <p className="mt-2 text-xs text-slate-500">
-            Choose an event. Attendance starts at the first counted Monday they are marked Here.
-          </p>
-
-          <ul className="mt-5 divide-y divide-slate-200 border-y border-slate-200">
-            {members.length === 0 ? (
-              <li className="py-4 text-sm text-slate-500">No one added yet.</li>
-            ) : (
-              rosterGroups.map((group) => (
-                <li key={group.eventType}>
-                  <div className="flex items-center justify-between gap-4 bg-slate-50/80 px-3 py-2.5">
-                    <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                      {eventTypeLabel(group.eventType)}
-                    </h4>
-                    <span className="text-xs text-slate-400">
-                      {group.members.length}
-                    </span>
-                  </div>
-                  <div className="divide-y divide-slate-200">
-                    {group.members.map((member) => {
-                      const stat = memberStatsById.get(member.id);
-                      if (!stat) return null;
-
-                      return (
-                        <div
-                          key={member.id}
-                          className="flex items-center justify-between gap-3 px-3 py-4"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate font-medium text-slate-900">
-                              {stat.member.name}
-                            </p>
-                            <p className="mt-1 text-sm text-slate-500">
-                              {stat.percent === null
-                                ? "No counted meeting marked Here yet"
-                                : `${stat.present} of ${stat.eligibleMeetings}, since ${formatShortDate(stat.firstPresentDate!)}`}
-                            </p>
-                          </div>
-                          <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
-                            <label className="sr-only" htmlFor={`event-type-${member.id}`}>
-                              Event type for {stat.member.name}
-                            </label>
-                            <select
-                              id={`event-type-${member.id}`}
-                              aria-label={`Event type for ${stat.member.name}`}
-                              value={stat.member.eventType}
-                              disabled={updatingMemberId === member.id}
-                              onChange={(event) =>
-                                void updateMemberEventType(
-                                  member.id,
-                                  normalizeEventType(event.target.value),
-                                )
-                              }
-                              className="h-8 max-w-[138px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <option value="unassigned">Choose event</option>
-                              {EVENT_TYPE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                              ))}
-                            </select>
-                            <span
-                              className={cn(
-                                "min-w-16 text-right text-sm font-semibold",
-                                statusTone(stat.percent),
-                              )}
-                            >
-                              <span className="block">
-                                {stat.percent === null ? "New" : formatPercent(stat.percent)}
-                              </span>
-                              {stat.percent === null ? null : (
-                                <span className="block text-xs font-medium">
-                                  {statusLabel(stat.percent)}
-                                </span>
-                              )}
-                            </span>
-                            <Button
-                              type="button"
-                              size="icon-sm"
-                              variant="ghost"
-                              aria-label={`Delete ${member.name}`}
-                              title={`Delete ${member.name}`}
-                              className="text-slate-500 hover:bg-red-50 hover:text-red-700"
-                              disabled={deletingMemberId === member.id || updatingMemberId === member.id}
-                              onClick={() => void deleteMember(member.id)}
-                            >
-                              {deletingMemberId === member.id ? (
-                                <RefreshCw className="animate-spin" aria-hidden="true" />
-                              ) : (
-                                <Trash2 aria-hidden="true" />
-                              )}
-                            </Button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </li>
-              ))
-            )}
-          </ul>
-        </section>
-
-        <section aria-labelledby="spreadsheet-heading" className="mt-12 border-t border-slate-200 pt-8">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h3 id="spreadsheet-heading" className="text-lg font-semibold tracking-tight">
-                All attendance data
-              </h3>
-              <p className="mt-1 text-sm text-slate-500">
-                Every person and saved meeting, including meetings excluded from percentages.
+                <Button
+                  type="submit"
+                  size="default"
+                  className="bg-[#08182b] text-white hover:bg-[#102844] sm:size-icon"
+                  aria-label="Add person"
+                  disabled={adding}
+                >
+                  <Plus aria-hidden="true" />
+                  <span className="sm:hidden">Add person</span>
+                </Button>
+              </form>
+              <p className="mt-2 text-xs text-slate-500">
+                Choose an event. Attendance starts at the first counted Monday they are marked Here.
               </p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={members.length === 0}
-              onClick={() => downloadAttendanceSpreadsheet(members, meetings, memberStatsById, attendanceLookup)}
-            >
-              <Download aria-hidden="true" />
-              Export CSV
-            </Button>
-          </div>
-          {members.length === 0 ? (
-            <p className="mt-4 text-sm text-slate-500">Add someone to see the spreadsheet.</p>
-          ) : (
-            <div className="mt-4 max-h-[480px] overflow-auto rounded-lg border border-slate-200 bg-white">
-              <table className="min-w-full border-collapse text-left text-xs">
-                <caption className="sr-only">Complete attendance data by person and meeting</caption>
-                <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
-                  <tr>
-                    <th scope="col" className="sticky left-0 z-20 min-w-36 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 font-semibold">Name</th>
-                    <th scope="col" className="min-w-28 border-b border-r border-slate-200 px-3 py-2 font-semibold">Event</th>
-                    <th scope="col" className="min-w-28 border-b border-r border-slate-200 px-3 py-2 font-semibold">First Here</th>
-                    <th scope="col" className="min-w-20 border-b border-r border-slate-200 px-3 py-2 font-semibold">Here / Counted</th>
-                    <th scope="col" className="min-w-20 border-b border-r border-slate-200 px-3 py-2 font-semibold">Percent</th>
-                    {meetings
-                      .slice()
-                      .sort((left, right) => left.meetingDate.localeCompare(right.meetingDate))
-                      .map((meeting) => (
-                        <th key={meeting.id} scope="col" className="min-w-24 border-b border-r border-slate-200 px-3 py-2 font-semibold">
-                          {formatShortDate(meeting.meetingDate)}
-                          <span className="mt-1 block font-normal text-slate-400">
-                            {meetingCountsTowardRate(meeting) ? "Counted" : "Not counted"}
-                          </span>
-                        </th>
-                      ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {members.map((member) => {
-                    const stat = memberStatsById.get(member.id);
-                    return (
-                      <tr key={member.id}>
-                        <th scope="row" className="sticky left-0 border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">{member.name}</th>
-                        <td className="border-r border-slate-100 px-3 py-2">{eventTypeLabel(member.eventType)}</td>
-                        <td className="border-r border-slate-100 px-3 py-2">{stat?.firstPresentDate ? formatShortDate(stat.firstPresentDate) : "Not started"}</td>
-                        <td className="border-r border-slate-100 px-3 py-2">{stat ? `${stat.present} / ${stat.eligibleMeetings}` : "—"}</td>
-                        <td className="border-r border-slate-100 px-3 py-2">{formatPercent(stat?.percent ?? null)}</td>
+
+              <ul className="mt-5 divide-y divide-slate-200 border-y border-slate-200">
+                {members.length === 0 ? (
+                  <li className="py-4 text-sm text-slate-500">No one added yet.</li>
+                ) : (
+                  rosterGroups.map((group) => (
+                    <li key={group.eventType}>
+                      <div className="flex items-center justify-between gap-4 bg-slate-50/80 px-3 py-2.5">
+                        <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                          {eventTypeLabel(group.eventType)}
+                        </h4>
+                        <span className="text-xs text-slate-400">
+                          {group.members.length}
+                        </span>
+                      </div>
+                      <div className="divide-y divide-slate-200">
+                        {group.members.map((member) => {
+                          const stat = memberStatsById.get(member.id);
+                          if (!stat) return null;
+
+                          return (
+                            <div
+                              key={member.id}
+                              className="flex items-center justify-between gap-3 px-3 py-4"
+                            >
+                              <div className="min-w-0">
+                                <p className="truncate font-medium text-slate-900">
+                                  {stat.member.name}
+                                </p>
+                                <p className="mt-1 text-sm text-slate-500">
+                                  {stat.percent === null
+                                    ? "No counted meeting marked Here yet"
+                                    : `${stat.present} of ${stat.eligibleMeetings}, since ${formatShortDate(stat.firstPresentDate!)}`}
+                                </p>
+                              </div>
+                              <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+                                <label className="sr-only" htmlFor={`event-type-${member.id}`}>
+                                  Event type for {stat.member.name}
+                                </label>
+                                <select
+                                  id={`event-type-${member.id}`}
+                                  aria-label={`Event type for ${stat.member.name}`}
+                                  value={stat.member.eventType}
+                                  disabled={updatingMemberId === member.id}
+                                  onChange={(event) =>
+                                    void updateMemberEventType(
+                                      member.id,
+                                      normalizeEventType(event.target.value),
+                                    )
+                                  }
+                                  className="h-8 max-w-[138px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  <option value="unassigned">Choose event</option>
+                                  {EVENT_TYPE_OPTIONS.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <span
+                                  className={cn(
+                                    "min-w-16 text-right text-sm font-semibold",
+                                    statusTone(stat.percent),
+                                  )}
+                                >
+                                  <span className="block">
+                                    {stat.percent === null ? "New" : formatPercent(stat.percent)}
+                                  </span>
+                                  {stat.percent === null ? null : (
+                                    <span className="block text-xs font-medium">
+                                      {statusLabel(stat.percent)}
+                                    </span>
+                                  )}
+                                </span>
+                                <Button
+                                  type="button"
+                                  size="icon-sm"
+                                  variant="ghost"
+                                  aria-label={`Delete ${member.name}`}
+                                  title={`Delete ${member.name}`}
+                                  className="text-red-800 hover:bg-red-50 hover:text-red-900"
+                                  disabled={deletingMemberId === member.id || updatingMemberId === member.id}
+                                  onClick={() => void deleteMember(member.id)}
+                                >
+                                  {deletingMemberId === member.id ? (
+                                    <RefreshCw className="animate-spin" aria-hidden="true" />
+                                  ) : (
+                                    <Trash2 aria-hidden="true" />
+                                  )}
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </section>
+
+          </TabsContent>
+
+          <TabsContent value="spreadsheet" className="mt-6 min-w-0">
+            <section aria-labelledby="spreadsheet-heading">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h3 id="spreadsheet-heading" className="text-lg font-semibold tracking-tight">
+                    All attendance data
+                  </h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Every person and saved meeting, including meetings excluded from percentages.
+                </p>
+                <p className="mt-1 text-xs text-slate-500 sm:hidden">
+                  Swipe sideways to see all meeting columns.
+                </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={members.length === 0}
+                  onClick={() => downloadAttendanceSpreadsheet(members, meetings, memberStatsById, attendanceLookup)}
+                >
+                  <Download aria-hidden="true" />
+                  Export CSV
+                </Button>
+              </div>
+              {members.length === 0 ? (
+                <p className="mt-4 text-sm text-slate-500">Add someone to see the spreadsheet.</p>
+              ) : (
+              <div
+                className="mt-4 max-h-[480px] overflow-auto rounded-lg border border-slate-200 bg-white"
+                role="region"
+                aria-label="Attendance spreadsheet. Scroll horizontally to see all dates."
+                tabIndex={0}
+              >
+                  <table className="min-w-full border-collapse text-left text-xs">
+                    <caption className="sr-only">Complete attendance data by person and meeting</caption>
+                    <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
+                      <tr>
+                        <th scope="col" className="sticky left-0 z-20 min-w-36 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 font-semibold">Name</th>
+                        <th scope="col" className="min-w-28 border-b border-r border-slate-200 px-3 py-2 font-semibold">Event</th>
+                        <th scope="col" className="min-w-28 border-b border-r border-slate-200 px-3 py-2 font-semibold">First Here</th>
+                        <th scope="col" className="min-w-20 border-b border-r border-slate-200 px-3 py-2 font-semibold">Here / Counted</th>
+                        <th scope="col" className="min-w-20 border-b border-r border-slate-200 px-3 py-2 font-semibold">Percent</th>
                         {meetings
                           .slice()
                           .sort((left, right) => left.meetingDate.localeCompare(right.meetingDate))
-                          .map((meeting) => {
-                            const status = attendanceLookup.get(meeting.id)?.get(member.id);
-                            const value = status !== undefined
-                              ? status ? "Here" : "Away"
-                              : meeting.meetingDate < member.eligibleFrom ? "Not on roster" : "Not recorded";
-                            return <td key={meeting.id} className="border-r border-slate-100 px-3 py-2 text-slate-600">{value}</td>;
-                          })}
+                          .map((meeting) => (
+                            <th key={meeting.id} scope="col" className="min-w-24 border-b border-r border-slate-200 px-3 py-2 font-semibold">
+                              {formatShortDate(meeting.meetingDate)}
+                              <span className="mt-1 block font-normal text-slate-400">
+                                {meetingCountsTowardRate(meeting) ? "Counted" : "Not counted"}
+                              </span>
+                            </th>
+                          ))}
                       </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {members.map((member) => {
+                        const stat = memberStatsById.get(member.id);
+                        return (
+                          <tr key={member.id}>
+                            <th scope="row" className="sticky left-0 border-r border-slate-200 bg-white px-3 py-2 font-medium text-slate-900">{member.name}</th>
+                            <td className="border-r border-slate-100 px-3 py-2">{eventTypeLabel(member.eventType)}</td>
+                            <td className="border-r border-slate-100 px-3 py-2">{stat?.firstPresentDate ? formatShortDate(stat.firstPresentDate) : "Not started"}</td>
+                            <td className="border-r border-slate-100 px-3 py-2">{stat ? `${stat.present} / ${stat.eligibleMeetings}` : "—"}</td>
+                            <td className="border-r border-slate-100 px-3 py-2">{formatPercent(stat?.percent ?? null)}</td>
+                            {meetings
+                              .slice()
+                              .sort((left, right) => left.meetingDate.localeCompare(right.meetingDate))
+                              .map((meeting) => {
+                                const status = attendanceLookup.get(meeting.id)?.get(member.id);
+                                const value = status !== undefined
+                                  ? status ? "Here" : "Away"
+                                  : meeting.meetingDate < member.eligibleFrom ? "Not on roster" : "Not recorded";
+                                return <td key={meeting.id} className="border-r border-slate-100 px-3 py-2 text-slate-600">{value}</td>;
+                              })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+          </TabsContent>
+
+          <TabsContent value="history" className="mt-6 min-w-0">
+            <section aria-labelledby="history-heading">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 id="history-heading" className="text-lg font-semibold tracking-tight">
+                    Saved Mondays
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-500">Open an earlier Monday to edit it.</p>
+                </div>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label="Refresh attendance"
+                  onClick={() => void loadData()}
+                >
+                  <RefreshCw aria-hidden="true" />
+                </Button>
+              </div>
+
+              {mondayMeetings.length === 0 ? (
+                <p className="mt-5 text-sm text-slate-500">No saved Mondays yet.</p>
+              ) : (
+                <ul className="mt-5 divide-y divide-slate-200 border-y border-slate-200">
+                  {mondayMeetings.slice(0, 6).map((meeting) => {
+                    const total = members.filter(
+                      (member) => member.eligibleFrom <= meeting.meetingDate,
+                    ).length;
+                    return (
+                      <li key={meeting.id} className="flex items-center justify-between gap-4 py-3 text-sm">
+                        <span className="font-medium text-slate-800">
+                          {formatDate(meeting.meetingDate)}
+                        </span>
+                        <span className="flex items-center gap-3 text-slate-500">
+                          {sessionPresentCount(meeting)} of {total} here
+                          {!meetingCountsTowardRate(meeting) ? <span className="text-xs text-amber-700">Not counted</span> : null}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-slate-500"
+                            onClick={() => {
+                              selectMeetingDate(meeting.meetingDate);
+                              setActiveTab("attendance");
+                            }}
+                          >
+                            Edit
+                          </Button>
+                        </span>
+                      </li>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        <section aria-labelledby="history-heading" className="mt-12 border-t border-slate-200 pt-8">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h3 id="history-heading" className="text-lg font-semibold tracking-tight">
-                Saved Mondays
-              </h3>
-              <p className="mt-1 text-sm text-slate-500">Open an earlier Monday to edit it.</p>
-            </div>
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              aria-label="Refresh attendance"
-              onClick={() => void loadData()}
-            >
-              <RefreshCw aria-hidden="true" />
-            </Button>
-          </div>
-
-          {mondayMeetings.length === 0 ? (
-            <p className="mt-5 text-sm text-slate-500">No saved Mondays yet.</p>
-          ) : (
-            <ul className="mt-5 divide-y divide-slate-200 border-y border-slate-200">
-              {mondayMeetings.slice(0, 6).map((meeting) => {
-                const total = members.filter(
-                  (member) => member.eligibleFrom <= meeting.meetingDate,
-                ).length;
-                return (
-                  <li key={meeting.id} className="flex items-center justify-between gap-4 py-3 text-sm">
-                    <span className="font-medium text-slate-800">
-                      {formatDate(meeting.meetingDate)}
-                    </span>
-                    <span className="flex items-center gap-3 text-slate-500">
-                      {sessionPresentCount(meeting)} of {total} here
-                      {!meetingCountsTowardRate(meeting) ? <span className="text-xs text-amber-700">Not counted</span> : null}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2 text-slate-500"
-                        onClick={() => setMeetingDate(meeting.meetingDate)}
-                      >
-                        Edit
-                      </Button>
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+                </ul>
+              )}
+            </section>
+          </TabsContent>
+        </Tabs>
       </div>
     </main>
   );

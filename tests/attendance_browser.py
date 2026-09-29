@@ -232,14 +232,45 @@ def main():
 
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
             expect(page.get_by_role("heading", name="Who's here?")).to_be_visible()
+            expect(page.get_by_role("tab")).to_have_count(4)
+            page.get_by_role("tab", name="Attendance").focus()
+            page.keyboard.press("ArrowRight")
+            expect(page.get_by_role("tab", name="Roster")).to_have_attribute("aria-selected", "true")
+            page.keyboard.press("ArrowLeft")
+            expect(page.get_by_role("tab", name="Attendance")).to_have_attribute("aria-selected", "true")
             expect(page.get_by_role("button", name="Here").first).to_have_attribute("aria-pressed", "true")
+            page.get_by_role("tab", name="Roster").click()
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("100%", exact=True)).to_be_visible()
             expect(page.get_by_text("No counted meeting marked Here yet", exact=True)).to_be_visible()
+            page.get_by_role("tab", name="Attendance").click()
 
             page.get_by_label("Monday meeting").select_option(fixture["saved_monday"])
             expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
             page.get_by_label("Monday meeting").select_option(fixture["current_monday"])
             expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
+            writes_before_marking_here = len(fixture["writes"])
+            page.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Away").click()
+            expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            page.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Here").click()
+            expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            assert len(fixture["writes"]) == writes_before_marking_here + 2, "Marking Here should save immediately"
+            current_meeting = next(item for item in fixture["meetings"] if item["meetingDate"] == fixture["current_monday"])
+            bob_saved_row = next((row for row in fixture["attendance"] if row["meetingId"] == current_meeting["id"] and row["memberId"] == 2), None)
+            assert bob_saved_row and bob_saved_row["present"] is True, f"Unexpected saved row: {bob_saved_row}; request: {fixture['writes'][-1]}"
+            page.reload(wait_until="networkidle")
+            assert page.get_by_label("Monday meeting").input_value() == fixture["current_monday"]
+            expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
+
+            page.get_by_label("Monday meeting").select_option(fixture["saved_monday"])
+            expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
+            page.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Here").click()
+            expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            page.reload(wait_until="networkidle")
+            assert page.get_by_label("Monday meeting").input_value() == fixture["saved_monday"]
+            expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
+            page.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Away").click()
+            expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            page.get_by_label("Monday meeting").select_option(fixture["current_monday"])
 
             expect(page.locator('[aria-label="Attendance for Alice"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
             expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
@@ -249,14 +280,18 @@ def main():
             page.get_by_role("button", name="Save attendance").click()
             expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
             assert fixture["meetings"][-1]["countsTowardAttendance"] is False
+            page.get_by_role("tab", name="Roster").click()
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("100%", exact=True)).to_be_visible()
 
+            page.get_by_role("tab", name="Attendance").click()
             page.get_by_label("Count this meeting toward attendance").check()
             page.get_by_role("button", name="Save attendance").click()
             expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            page.get_by_role("tab", name="Roster").click()
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("50%", exact=True)).to_be_visible()
-            expect(page.get_by_text("Not started", exact=True)).to_be_visible()
+            expect(page.get_by_text("No counted meeting marked Here yet", exact=True)).to_be_visible()
 
+            page.get_by_role("tab", name="Spreadsheet").click()
             with page.expect_download() as download_event:
                 page.get_by_role("button", name="Export CSV").click()
             download = download_event.value
@@ -265,16 +300,22 @@ def main():
             assert "not counted" in csv_text
             assert "Alice" in csv_text and "50%" in csv_text
 
+            page.get_by_role("tab", name="Roster").click()
             page.locator("#member-name").fill("Cara")
             page.locator("#member-event-type").select_option("public_forum")
             page.get_by_role("button", name="Add person").click()
             roster = page.locator('section[aria-labelledby="roster-heading"]')
             expect(roster.get_by_text("Cara", exact=True)).to_be_visible()
-            expect(page.get_by_text("Public Forum", exact=True).first).to_be_visible()
+            expect(page.get_by_role("heading", name="Public Forum")).to_be_visible()
             page.once("dialog", lambda dialog: dialog.accept())
             page.get_by_role("button", name="Delete Cara").click()
             expect(roster.get_by_text("Cara", exact=True)).to_have_count(0)
             assert all(row["memberId"] != 5 for row in fixture["attendance"])
+
+            page.get_by_role("tab", name="History").click()
+            expect(page.get_by_role("heading", name="Saved Mondays")).to_be_visible()
+            page.get_by_role("button", name="Edit").first.click()
+            expect(page.get_by_role("tab", name="Attendance")).to_have_attribute("aria-selected", "true")
 
             writes_before_student_view = len(fixture["writes"])
             page.goto(f"{origin}{BASE_PATH}/?view=student", wait_until="networkidle")
@@ -289,15 +330,17 @@ def main():
 
             fixture = make_percentage_fixture("Near Threshold", "public_forum", range(60, 9, -1), 38)
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
+            page.get_by_role("tab", name="Roster").click()
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("74.5%", exact=True)).to_be_visible()
             expect(page.get_by_text("Below 75%", exact=True)).to_be_visible()
 
             fixture = make_percentage_fixture("Exactly 75", "lincoln_douglas", (9, 8, 7, 6), 3)
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
+            page.get_by_role("tab", name="Roster").click()
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("75%", exact=True)).to_be_visible()
             expect(page.get_by_text("Passing", exact=True)).to_be_visible()
 
-            print("PASS: default Here, selected-count meetings, first-Here baseline, 75% thresholds, spreadsheet CSV, add/delete, and read-only student UI")
+            print("PASS: autosave and refresh, meeting-date persistence, keyboard tabs, attendance rules, spreadsheet export, roster edits, and read-only student UI")
             browser.close()
     finally:
         server.shutdown()

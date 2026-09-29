@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import AttendanceApp from "../app/attendance-app";
 import "../app/globals.css";
+import { getRequestedMondayDate } from "../lib/attendance-date";
 
 const API_BASE_URL = "https://eastlake-speech-debate-attendance.dtalur.chatgpt.site";
 
@@ -23,7 +24,10 @@ function eastlakeDate() {
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AttendanceApp
-      initialDate={eastlakeDate()}
+      initialDate={getRequestedMondayDate(
+        new URLSearchParams(window.location.search).get("meeting") ?? undefined,
+        eastlakeDate(),
+      )}
       initialView={
         new URLSearchParams(window.location.search).get("view") === "student"
           ? "student"
