@@ -1,6 +1,8 @@
 import { asc, desc, eq, sql } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { attendance, meetings, members } from "../../../db/schema";
+import { chunkAttendanceRows } from "../../../lib/attendance-batches.js";
+import { attendanceRouteErrorMessage } from "../../../lib/attendance-errors.js";
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -8,27 +10,6 @@ function today() {
 
 function now() {
   return new Date().toISOString();
-}
-
-function routeErrorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : "Unexpected error";
-  const detail =
-    error instanceof Error && error.cause instanceof Error
-      ? error.cause.message
-      : "";
-  const combined = `${message}\n${detail}`;
-
-  if (
-    combined.includes("no such table") ||
-    combined.includes("members") ||
-    combined.includes("meetings") ||
-    combined.includes("event_type") ||
-    combined.includes("counts_toward_attendance")
-  ) {
-    return "Attendance storage is not ready yet. Publish the latest app version, then reload this page.";
-  }
-
-  return message;
 }
 
 function isDate(value: unknown): value is string {
@@ -63,19 +44,21 @@ async function ensureMeetingWithDefaults(
   );
 
   if (eligibleMembers.length > 0) {
-    await db
-      .insert(attendance)
-      .values(
-        eligibleMembers.map((member) => ({
-          meetingId: meeting.id,
-          memberId: member.id,
-          present: true,
-          updatedAt: timestamp,
-        })),
-      )
-      .onConflictDoNothing({
-        target: [attendance.meetingId, attendance.memberId],
-      });
+    const attendanceRows = eligibleMembers.map((member) => ({
+      meetingId: meeting.id,
+      memberId: member.id,
+      present: true,
+      updatedAt: timestamp,
+    }));
+
+    for (const batch of chunkAttendanceRows(attendanceRows)) {
+      await db
+        .insert(attendance)
+        .values(batch)
+        .onConflictDoNothing({
+          target: [attendance.meetingId, attendance.memberId],
+        });
+    }
   }
 
   return meeting.id;
@@ -147,7 +130,7 @@ export async function GET(request: Request) {
       attendance: attendanceRows,
     });
   } catch (error) {
-    return jsonResponse(request, { error: routeErrorMessage(error) }, { status: 500 });
+    return jsonResponse(request, { error: attendanceRouteErrorMessage(error) }, { status: 500 });
   }
 }
 
@@ -415,23 +398,25 @@ export async function POST(request: Request) {
       }
 
       if (eligibleMembers.length > 0) {
-        await db
-          .insert(attendance)
-          .values(
-            eligibleMembers.map((member) => ({
-              meetingId: meetingId!,
-              memberId: member.id,
-              present: statuses[String(member.id)] === true,
-              updatedAt: now(),
-            })),
-          )
-          .onConflictDoUpdate({
-            target: [attendance.meetingId, attendance.memberId],
-            set: {
-              present: sql`excluded.present`,
-              updatedAt: now(),
-            },
-          });
+        const attendanceRows = eligibleMembers.map((member) => ({
+          meetingId: meetingId!,
+          memberId: member.id,
+          present: statuses[String(member.id)] === true,
+          updatedAt: now(),
+        }));
+
+        for (const batch of chunkAttendanceRows(attendanceRows)) {
+          await db
+            .insert(attendance)
+            .values(batch)
+            .onConflictDoUpdate({
+              target: [attendance.meetingId, attendance.memberId],
+              set: {
+                present: sql`excluded.present`,
+                updatedAt: now(),
+              },
+            });
+        }
       }
 
       return jsonResponse(request, { meetingId });
@@ -439,6 +424,6 @@ export async function POST(request: Request) {
 
     return jsonResponse(request, { error: "Unknown attendance action." }, { status: 400 });
   } catch (error) {
-    return jsonResponse(request, { error: routeErrorMessage(error) }, { status: 500 });
+    return jsonResponse(request, { error: attendanceRouteErrorMessage(error) }, { status: 500 });
   }
 }

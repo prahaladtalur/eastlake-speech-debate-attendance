@@ -555,6 +555,12 @@ export default function AttendanceApp({
     [meetingDate, members],
   );
 
+  const missingAttendanceCount = useMemo(() => {
+    if (!selectedMeeting) return 0;
+    const savedStatuses = attendanceLookup.get(selectedMeeting.id);
+    return eligibleMembers.filter((member) => !savedStatuses?.has(member.id)).length;
+  }, [attendanceLookup, eligibleMembers, selectedMeeting]);
+
   useEffect(() => {
     const savedStatuses = selectedMeeting
       ? attendanceLookup.get(selectedMeeting.id)
@@ -1239,7 +1245,7 @@ export default function AttendanceApp({
                 })}
               </Tabs>
 
-              {!selectedMeeting ? (
+              {!selectedMeeting || missingAttendanceCount > 0 ? (
                 <Button
                   type="button"
                   size="lg"
@@ -1248,7 +1254,11 @@ export default function AttendanceApp({
                   onClick={recordEveryoneHere}
                 >
                   {saving ? <RefreshCw className="animate-spin" aria-hidden="true" /> : null}
-                  {saving ? "Saving…" : "Record everyone Here"}
+                  {saving
+                    ? "Saving…"
+                    : selectedMeeting
+                      ? "Fill missing attendance as Here"
+                      : "Record everyone Here"}
                 </Button>
               ) : null}
             </section>

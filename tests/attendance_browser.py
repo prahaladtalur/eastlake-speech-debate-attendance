@@ -433,6 +433,47 @@ def main():
             assert len(fixture["writes"]) == writes_before_student_view
 
             fixture = make_fixture()
+            incomplete_date = fixture["current_monday"]
+            eligibility_date = (
+                datetime.fromisoformat(incomplete_date) - timedelta(weeks=4)
+            ).date().isoformat()
+            fixture["members"] = [
+                {
+                    "id": member_id,
+                    "name": f"Member {member_id}",
+                    "eventType": ("speech", "policy", "public_forum", "lincoln_douglas")[(member_id - 1) % 4],
+                    "eligibleFrom": eligibility_date,
+                    "createdAt": eligibility_date,
+                }
+                for member_id in range(1, 44)
+            ]
+            fixture["meetings"] = [{
+                "id": 4,
+                "meetingDate": incomplete_date,
+                "countsTowardAttendance": True,
+                "createdAt": incomplete_date,
+                "updatedAt": incomplete_date,
+            }]
+            fixture["attendance"] = [{
+                "id": 1,
+                "meetingId": 4,
+                "memberId": 1,
+                "present": False,
+                "updatedAt": incomplete_date,
+            }]
+            page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
+            fill_missing_button = page.get_by_role(
+                "button", name="Fill missing attendance as Here"
+            )
+            expect(fill_missing_button).to_be_visible()
+            fill_missing_button.click()
+            expect(page.get_by_text("Attendance recorded", exact=False)).to_be_visible()
+            assert len(fixture["attendance"]) == 43
+            assert fixture["attendance"][0]["present"] is False, "Existing Away marks must be preserved"
+            assert all(row["present"] for row in fixture["attendance"][1:])
+            expect(page.get_by_role("button", name="Fill missing attendance as Here")).to_have_count(0)
+
+            fixture = make_fixture()
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
             future_monday = (
                 datetime.fromisoformat(fixture["current_monday"]) + timedelta(weeks=8)
@@ -465,7 +506,7 @@ def main():
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("75%", exact=True)).to_be_visible()
             expect(page.get_by_text("Passing", exact=True)).to_be_visible()
 
-            print("PASS: debate tabs, future Mondays, autosave and refresh, attendance rules, spreadsheet export, roster edits, and read-only student UI")
+            print("PASS: debate tabs, future Mondays, batch-recovery UI, autosave, attendance rules, spreadsheet export, roster edits, and read-only student UI")
             browser.close()
     finally:
         server.shutdown()
