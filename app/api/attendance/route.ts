@@ -39,6 +39,48 @@ function isMondayDate(value: string) {
   return new Date(`${value}T12:00:00Z`).getUTCDay() === 1;
 }
 
+async function ensureMeetingWithDefaults(
+  db: ReturnType<typeof getDb>,
+  meetingDate: string,
+  countsTowardAttendance: boolean,
+) {
+  const timestamp = now();
+  await db
+    .insert(meetings)
+    .values({ meetingDate, countsTowardAttendance, updatedAt: timestamp })
+    .onConflictDoNothing({ target: meetings.meetingDate });
+
+  const [meeting] = await db
+    .select()
+    .from(meetings)
+    .where(eq(meetings.meetingDate, meetingDate))
+    .limit(1);
+
+  if (!meeting) throw new Error("Could not create the meeting.");
+
+  const eligibleMembers = (await db.select().from(members)).filter(
+    (member) => member.eligibleFrom <= meetingDate,
+  );
+
+  if (eligibleMembers.length > 0) {
+    await db
+      .insert(attendance)
+      .values(
+        eligibleMembers.map((member) => ({
+          meetingId: meeting.id,
+          memberId: member.id,
+          present: true,
+          updatedAt: timestamp,
+        })),
+      )
+      .onConflictDoNothing({
+        target: [attendance.meetingId, attendance.memberId],
+      });
+  }
+
+  return meeting.id;
+}
+
 function cleanName(value: unknown) {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
 }
@@ -119,6 +161,7 @@ export async function POST(request: Request) {
       countsTowardAttendance?: boolean;
       eligibleFrom?: string;
       meetingDate?: string;
+      present?: boolean;
       statuses?: Record<string, boolean>;
     };
 
@@ -203,6 +246,122 @@ export async function POST(request: Request) {
       }
 
       return jsonResponse(request, { deleted: true, member });
+    }
+
+    if (payload.action === "ensure_meeting") {
+      if (!isDate(payload.meetingDate) || !isMondayDate(payload.meetingDate)) {
+        return jsonResponse(request,
+          { error: "Choose a valid Monday meeting date." },
+          { status: 400 },
+        );
+      }
+
+      const eligibleMembers = (await db.select().from(members)).filter(
+        (member) => member.eligibleFrom <= payload.meetingDate!,
+      );
+      if (eligibleMembers.length === 0) {
+        return jsonResponse(request,
+          { error: "Add at least one person before recording attendance." },
+          { status: 400 },
+        );
+      }
+
+      const meetingId = await ensureMeetingWithDefaults(
+        db,
+        payload.meetingDate,
+        payload.countsTowardAttendance !== false,
+      );
+      return jsonResponse(request, { meetingId });
+    }
+
+    if (payload.action === "save_member_attendance") {
+      if (!isDate(payload.meetingDate) || !isMondayDate(payload.meetingDate)) {
+        return jsonResponse(request,
+          { error: "Choose a valid Monday meeting date." },
+          { status: 400 },
+        );
+      }
+
+      const memberId = Number(payload.memberId);
+      if (!Number.isInteger(memberId) || memberId < 1 || typeof payload.present !== "boolean") {
+        return jsonResponse(request,
+          { error: "Choose a person and mark them Here or Away." },
+          { status: 400 },
+        );
+      }
+
+      const [member] = await db
+        .select()
+        .from(members)
+        .where(eq(members.id, memberId))
+        .limit(1);
+      if (!member || member.eligibleFrom > payload.meetingDate) {
+        return jsonResponse(request,
+          { error: "That person is not on the roster for this Monday." },
+          { status: 404 },
+        );
+      }
+
+      const [existingMeeting] = await db
+        .select()
+        .from(meetings)
+        .where(eq(meetings.meetingDate, payload.meetingDate))
+        .limit(1);
+      const meetingId = existingMeeting?.id ?? await ensureMeetingWithDefaults(
+        db,
+        payload.meetingDate,
+        true,
+      );
+
+      await db
+        .insert(attendance)
+        .values({
+          meetingId,
+          memberId,
+          present: payload.present,
+          updatedAt: now(),
+        })
+        .onConflictDoUpdate({
+          target: [attendance.meetingId, attendance.memberId],
+          set: { present: payload.present, updatedAt: now() },
+        });
+
+      return jsonResponse(request, { meetingId });
+    }
+
+    if (payload.action === "set_meeting_counted") {
+      if (
+        !isDate(payload.meetingDate) ||
+        !isMondayDate(payload.meetingDate) ||
+        typeof payload.countsTowardAttendance !== "boolean"
+      ) {
+        return jsonResponse(request,
+          { error: "Choose a valid Monday and attendance setting." },
+          { status: 400 },
+        );
+      }
+
+      const eligibleMembers = (await db.select().from(members)).filter(
+        (member) => member.eligibleFrom <= payload.meetingDate!,
+      );
+      if (eligibleMembers.length === 0) {
+        return jsonResponse(request,
+          { error: "Add at least one person before recording attendance." },
+          { status: 400 },
+        );
+      }
+
+      const meetingId = await ensureMeetingWithDefaults(
+        db,
+        payload.meetingDate,
+        payload.countsTowardAttendance,
+      );
+      await db
+        .update(meetings)
+        .set({ countsTowardAttendance: payload.countsTowardAttendance, updatedAt: now() })
+        .where(eq(meetings.id, meetingId));
+
+      return jsonResponse(request, { meetingId });
     }
 
     if (payload.action === "save_meeting") {

@@ -270,6 +270,7 @@ export default function AttendanceApp({
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [meetingDate, setMeetingDate] = useState(() => mondayDate(initialDate));
+  const meetingDateRef = useRef(meetingDate);
   const [statuses, setStatuses] = useState<Record<number, boolean>>({});
   const [memberName, setMemberName] = useState("");
   const [newMemberEventType, setNewMemberEventType] =
@@ -287,7 +288,9 @@ export default function AttendanceApp({
   const [error, setError] = useState("");
 
   const selectMeetingDate = useCallback((value: string) => {
+    if (attendanceSaveInFlight.current) return;
     if (!isMondayDate(value)) return;
+    meetingDateRef.current = value;
     setMeetingDate(value);
 
     const url = new URL(window.location.href);
@@ -720,20 +723,22 @@ export default function AttendanceApp({
     }
   }
 
-  async function saveMeeting(
-    statusesToSave = statuses,
-    countsForMeeting = countsTowardAttendance,
+  async function saveAttendanceChange(
+    action: "save_member_attendance" | "set_meeting_counted" | "ensure_meeting",
+    fields: Record<string, string | number | boolean>,
+    successMessage: string,
     rollback?: {
-      statuses: Record<number, boolean>;
-      countsTowardAttendance: boolean;
+      statuses?: Record<number, boolean>;
+      countsTowardAttendance?: boolean;
     },
   ) {
     if (attendanceSaveInFlight.current) return;
     if (eligibleMembers.length === 0) {
-      setError("Add at least one person before saving attendance.");
+      setError("Add at least one person before recording attendance.");
       return;
     }
 
+    const saveDate = meetingDate;
     attendanceSaveInFlight.current = true;
     setSaving(true);
     setError("");
@@ -743,15 +748,9 @@ export default function AttendanceApp({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "save_meeting",
-          meetingDate,
-          countsTowardAttendance: countsForMeeting,
-          statuses: Object.fromEntries(
-            eligibleMembers.map((member) => [
-              String(member.id),
-              statusesToSave[member.id] === true,
-            ]),
-          ),
+          action,
+          meetingDate: saveDate,
+          ...fields,
         }),
       });
       const payload = (await response.json()) as { error?: string };
@@ -760,11 +759,13 @@ export default function AttendanceApp({
       }
 
       await loadData();
-      setNotice(`Attendance saved for ${formatDate(meetingDate)}.`);
+      setNotice(successMessage);
     } catch (saveError) {
-      if (rollback) {
-        setStatuses(rollback.statuses);
-        setCountsTowardAttendance(rollback.countsTowardAttendance);
+      if (rollback && meetingDateRef.current === saveDate) {
+        if (rollback.statuses) setStatuses(rollback.statuses);
+        if (rollback.countsTowardAttendance !== undefined) {
+          setCountsTowardAttendance(rollback.countsTowardAttendance);
+        }
       }
       setError(
         saveError instanceof Error
@@ -783,10 +784,12 @@ export default function AttendanceApp({
     const nextStatuses = { ...statuses, [memberId]: present };
     setStatuses(nextStatuses);
     setNotice("");
-    void saveMeeting(nextStatuses, countsTowardAttendance, {
-      statuses: previousStatuses,
-      countsTowardAttendance,
-    });
+    void saveAttendanceChange(
+      "save_member_attendance",
+      { memberId, present },
+      `Attendance saved for ${formatDate(meetingDate)}.`,
+      { statuses: previousStatuses },
+    );
   }
 
   function setMeetingCountsTowardAttendance(nextValue: boolean) {
@@ -794,10 +797,20 @@ export default function AttendanceApp({
     const previousValue = countsTowardAttendance;
     setCountsTowardAttendance(nextValue);
     setNotice("");
-    void saveMeeting(statuses, nextValue, {
-      statuses,
-      countsTowardAttendance: previousValue,
-    });
+    void saveAttendanceChange(
+      "set_meeting_counted",
+      { countsTowardAttendance: nextValue },
+      `Attendance settings saved for ${formatDate(meetingDate)}.`,
+      { countsTowardAttendance: previousValue },
+    );
+  }
+
+  function recordEveryoneHere() {
+    void saveAttendanceChange(
+      "ensure_meeting",
+      { countsTowardAttendance },
+      `Attendance recorded for ${formatDate(meetingDate)}.`,
+    );
   }
 
   function sessionPresentCount(meeting: Meeting) {
@@ -1023,6 +1036,7 @@ export default function AttendanceApp({
                       aria-label="Monday meeting"
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-xs outline-none transition focus-visible:border-slate-400 focus-visible:ring-2 focus-visible:ring-slate-300 sm:w-[260px]"
                       value={meetingDate}
+                      disabled={saving || loading}
                       onChange={(event) => selectMeetingDate(event.target.value)}
                     >
                       {meetingOptions.map((date) => (
@@ -1159,16 +1173,18 @@ export default function AttendanceApp({
                 </div>
               )}
 
-              <Button
-                type="button"
-                size="lg"
-                className="mt-6 h-11 w-full bg-[#e8652b] text-white hover:bg-[#d95822]"
-                disabled={saving || loading || eligibleMembers.length === 0}
-                onClick={() => void saveMeeting()}
-              >
-                {saving ? <RefreshCw className="animate-spin" aria-hidden="true" /> : null}
-                {saving ? "Saving…" : "Save attendance"}
-              </Button>
+              {!selectedMeeting ? (
+                <Button
+                  type="button"
+                  size="lg"
+                  className="mt-6 h-11 w-full bg-[#e8652b] text-white hover:bg-[#d95822]"
+                  disabled={saving || loading || eligibleMembers.length === 0}
+                  onClick={recordEveryoneHere}
+                >
+                  {saving ? <RefreshCw className="animate-spin" aria-hidden="true" /> : null}
+                  {saving ? "Saving…" : "Record everyone Here"}
+                </Button>
+              ) : null}
             </section>
 
           </TabsContent>
@@ -1464,6 +1480,7 @@ export default function AttendanceApp({
                             type="button"
                             size="sm"
                             variant="ghost"
+                            disabled={saving || loading}
                             className="h-7 px-2 text-slate-500"
                             onClick={() => {
                               selectMeetingDate(meeting.meetingDate);

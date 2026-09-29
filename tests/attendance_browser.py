@@ -154,6 +154,41 @@ def main():
         "Access-Control-Allow-Headers": "Content-Type",
     }
 
+    def ensure_fixture_meeting(meeting_date, counts_toward_attendance=True):
+        meeting = next(
+            (item for item in fixture["meetings"] if item["meetingDate"] == meeting_date),
+            None,
+        )
+        if meeting is None:
+            meeting = {
+                "id": max((item["id"] for item in fixture["meetings"]), default=0) + 1,
+                "meetingDate": meeting_date,
+                "countsTowardAttendance": counts_toward_attendance,
+                "createdAt": datetime.now().isoformat(),
+                "updatedAt": datetime.now().isoformat(),
+            }
+            fixture["meetings"].append(meeting)
+        for member in fixture["members"]:
+            if member["eligibleFrom"] > meeting_date:
+                continue
+            existing = next(
+                (
+                    row
+                    for row in fixture["attendance"]
+                    if row["meetingId"] == meeting["id"] and row["memberId"] == member["id"]
+                ),
+                None,
+            )
+            if existing is None:
+                fixture["attendance"].append({
+                    "id": max((row["id"] for row in fixture["attendance"]), default=0) + 1,
+                    "meetingId": meeting["id"],
+                    "memberId": member["id"],
+                    "present": True,
+                    "updatedAt": datetime.now().isoformat(),
+                })
+        return meeting
+
     def handle_api(route):
         request = route.request
         if request.method == "OPTIONS":
@@ -172,7 +207,30 @@ def main():
         action = payload["action"]
         status_code = 200
         response = {}
-        if action == "save_meeting":
+        if action == "ensure_meeting":
+            meeting = ensure_fixture_meeting(
+                payload["meetingDate"],
+                payload.get("countsTowardAttendance", True),
+            )
+            response["meetingId"] = meeting["id"]
+        elif action == "save_member_attendance":
+            meeting = ensure_fixture_meeting(payload["meetingDate"])
+            record = next(
+                row for row in fixture["attendance"]
+                if row["meetingId"] == meeting["id"] and row["memberId"] == payload["memberId"]
+            )
+            record["present"] = payload["present"]
+            record["updatedAt"] = datetime.now().isoformat()
+            response["meetingId"] = meeting["id"]
+        elif action == "set_meeting_counted":
+            meeting = ensure_fixture_meeting(
+                payload["meetingDate"],
+                payload["countsTowardAttendance"],
+            )
+            meeting["countsTowardAttendance"] = payload["countsTowardAttendance"]
+            meeting["updatedAt"] = datetime.now().isoformat()
+            response["meetingId"] = meeting["id"]
+        elif action == "save_meeting":
             meeting_date = payload["meetingDate"]
             meeting = next((item for item in fixture["meetings"] if item["meetingDate"] == meeting_date), None)
             if meeting is None:
@@ -244,6 +302,22 @@ def main():
             expect(page.get_by_text("No counted meeting marked Here yet", exact=True)).to_be_visible()
             page.get_by_role("tab", name="Attendance").click()
 
+            second_editor = context.new_page()
+            second_editor.route(API_URL, handle_api)
+            second_editor.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
+            page.locator('[aria-label="Attendance for Alice"]').get_by_role("button", name="Away").click()
+            expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            second_editor.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Away").click()
+            expect(second_editor.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            page.reload(wait_until="networkidle")
+            expect(page.locator('[aria-label="Attendance for Alice"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
+            expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
+            second_editor.close()
+
+            fixture = make_fixture()
+            page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
+            expect(page.get_by_role("heading", name="Who's here?")).to_be_visible()
+
             page.get_by_label("Monday meeting").select_option(fixture["saved_monday"])
             expect(page.locator('[aria-label="Attendance for Bob"] button').filter(has_text="Away")).to_have_attribute("aria-pressed", "true")
             page.get_by_label("Monday meeting").select_option(fixture["current_monday"])
@@ -277,16 +351,14 @@ def main():
             page.locator('[aria-label="Attendance for Alice"]').get_by_role("button", name="Away").click()
             page.locator('[aria-label="Attendance for Bob"]').get_by_role("button", name="Away").click()
             page.get_by_label("Count this meeting toward attendance").uncheck()
-            page.get_by_role("button", name="Save attendance").click()
-            expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            expect(page.get_by_text("Attendance settings saved", exact=False)).to_be_visible()
             assert fixture["meetings"][-1]["countsTowardAttendance"] is False
             page.get_by_role("tab", name="Roster").click()
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("100%", exact=True)).to_be_visible()
 
             page.get_by_role("tab", name="Attendance").click()
             page.get_by_label("Count this meeting toward attendance").check()
-            page.get_by_role("button", name="Save attendance").click()
-            expect(page.get_by_text("Attendance saved", exact=False)).to_be_visible()
+            expect(page.get_by_text("Attendance settings saved", exact=False)).to_be_visible()
             page.get_by_role("tab", name="Roster").click()
             expect(page.locator('section[aria-labelledby="roster-heading"]').get_by_text("50%", exact=True)).to_be_visible()
             expect(page.get_by_text("No counted meeting marked Here yet", exact=True)).to_be_visible()
@@ -327,6 +399,22 @@ def main():
             expect(page.get_by_role("button", name="Delete Alice")).to_have_count(0)
             expect(page.get_by_role("button", name="Here")).to_have_count(0)
             assert len(fixture["writes"]) == writes_before_student_view
+
+            fixture = make_fixture()
+            page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
+            page.get_by_role("button", name="Record everyone Here").click()
+            expect(page.get_by_text("Attendance recorded", exact=False)).to_be_visible()
+            current_meeting = next(
+                item for item in fixture["meetings"]
+                if item["meetingDate"] == fixture["current_monday"]
+            )
+            assert all(
+                row["present"] is True
+                for row in fixture["attendance"]
+                if row["meetingId"] == current_meeting["id"]
+            )
+            page.reload(wait_until="networkidle")
+            expect(page.locator('[aria-label="Attendance for Alice"] button').filter(has_text="Here")).to_have_attribute("aria-pressed", "true")
 
             fixture = make_percentage_fixture("Near Threshold", "public_forum", range(60, 9, -1), 38)
             page.goto(f"{origin}{BASE_PATH}/", wait_until="networkidle")
